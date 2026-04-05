@@ -39,7 +39,8 @@ def ejecutar_prueba_local():
         )
 
         print("Ejecutando alg_NSGA2... Esto puede tardar.")
-        mejor_solucion = alg_NSGA2(numN, numC, coordenadas, horario, capacidad)
+        resultado = alg_NSGA2(numN, numC, coordenadas, horario, capacidad)
+        mejor_solucion = resultado[0] if isinstance(resultado, tuple) else resultado
         print("--- ALGORITMO FINALIZADO CON ÉXITO ---")
 
         # 3. Muestra el resultado en la terminal

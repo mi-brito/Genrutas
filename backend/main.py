@@ -2,6 +2,7 @@
 
 import os
 import io
+import base64
 import logging
 import random
 from typing import List, Tuple
@@ -13,8 +14,21 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from azure.storage.blob import BlobServiceClient
-from dotenv import load_dotenv
-load_dotenv()
+
+
+def cargar_dotenv_simple(ruta='.env'):
+    if not os.path.exists(ruta):
+        return
+    with open(ruta, 'r', encoding='utf-8') as archivo:
+        for linea in archivo:
+            linea = linea.strip()
+            if not linea or linea.startswith('#') or '=' not in linea:
+                continue
+            clave, valor = linea.split('=', 1)
+            os.environ.setdefault(clave.strip(), valor.strip().strip('"').strip("'"))
+
+
+cargar_dotenv_simple()
 # Módulos locales
 from alg_nsga2 import preparar_datos_para_algoritmo, alg_NSGA2, crear_matriz_de_distancias_y_tiempos
 

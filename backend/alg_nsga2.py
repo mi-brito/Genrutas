@@ -1,9 +1,37 @@
 
-# Añade esto en alg_nsga2.py (asegúrate de importar requests y os arriba)
-import requests
+import io
+import json
+import math
 import os
-from dotenv import load_dotenv
-load_dotenv()
+import random
+from collections import namedtuple
+from datetime import datetime, time, timedelta
+
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from urllib.parse import urlencode
+from urllib.request import urlopen, Request
+
+
+def cargar_dotenv_simple(ruta='.env'):
+    """Carga variables desde un archivo .env si existe, sin dependencia externa."""
+    if not os.path.exists(ruta):
+        return
+    with open(ruta, 'r', encoding='utf-8') as archivo:
+        for linea in archivo:
+            linea = linea.strip()
+            if not linea or linea.startswith('#') or '=' not in linea:
+                continue
+            clave, valor = linea.split('=', 1)
+            clave = clave.strip()
+            valor = valor.strip().strip('"').strip("'")
+            os.environ.setdefault(clave, valor)
+
+
+cargar_dotenv_simple()
 
 def crear_matriz_de_distancias_y_tiempos(coordenadas):
     """
@@ -39,11 +67,10 @@ def crear_matriz_de_distancias_y_tiempos(coordenadas):
     }
 
     try:
-        response = requests.get(url, params=params)
-        # print(f"URL enviada a Mapbox: {response.url}") # Descomentar para depurar
-        
-        response.raise_for_status()
-        data = response.json()
+        query = urlencode(params)
+        request = Request(f"{url}?{query}", headers={"User-Agent": "Mozilla/5.0"})
+        with urlopen(request, timeout=30) as response:
+            data = json.loads(response.read().decode('utf-8'))
 
         if data.get('code') == 'Ok' and 'distances' in data and 'durations' in data:
             print("Matrices de distancias y tiempos creadas exitosamente.")
@@ -53,7 +80,7 @@ def crear_matriz_de_distancias_y_tiempos(coordenadas):
             print(f"ERROR MAPBOX: {data.get('message', 'Respuesta incompleta')}")
             return None, None
 
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         print(f"ERROR DE CONEXIÓN con Mapbox: {e}")
         return None, None
     
@@ -143,6 +170,12 @@ import pandas as pd
 
 # Nueva tupla de tipo Individuo que tiene su solucion y la evaluacion de la solucion
 Individuo = namedtuple('Individuo', ['solucion', 'evaluacion', 'evaluacion_trayecto', 'evaluacion_carga', 'evaluacion_tiempo', 'dominacion', 'distancia'])
+
+# Matrices y mapeos globales usados durante la evaluación.
+# Se cargan en alg_NSGA2() para que las funciones internas no tengan que
+# cambiar de firma en cascada.
+MATRIZ_DISTANCIAS_GLOBAL = None
+COORD_A_INDICE_GLOBAL = {}
 
 # Para la graficas
 y_mejor = []
@@ -253,13 +286,31 @@ def distancia_euclidiana(x, y):
     distancia = math.sqrt(distancia_x**2 + distancia_y**2)
     return distancia
 
+
+def obtener_distancia_entre_puntos(punto_origen, punto_destino):
+    """
+    Devuelve la distancia entre dos nodos.
+    Si existe una matriz de distancias cargada, la usa; si no, cae a distancia euclidiana.
+    """
+    global MATRIZ_DISTANCIAS_GLOBAL, COORD_A_INDICE_GLOBAL
+
+    if MATRIZ_DISTANCIAS_GLOBAL is not None and COORD_A_INDICE_GLOBAL:
+        idx_origen = COORD_A_INDICE_GLOBAL.get(tuple(punto_origen[0]))
+        idx_destino = COORD_A_INDICE_GLOBAL.get(tuple(punto_destino[0]))
+        if idx_origen is not None and idx_destino is not None:
+            distancia = MATRIZ_DISTANCIAS_GLOBAL[idx_origen][idx_destino]
+            if distancia is not None:
+                return distancia
+
+    return distancia_euclidiana(punto_origen[0], punto_destino[0])
+
 # Evalua el recorrido realizado por un camion, de acuerdo al trafico que hubo y la carga de residuos que se recogieron
 def evaluar_recorrido(trayecto):
     trafico = 0
     num_residuos = 0
     i = 1
     while i < len(trayecto):
-        trafico += distancia_euclidiana(trayecto[i-1][0], trayecto[i][0])
+        trafico += obtener_distancia_entre_puntos(trayecto[i-1], trayecto[i])
         num_residuos += trayecto[i][1]
         i += 1
     return trafico, num_residuos
@@ -699,7 +750,23 @@ def obtiene_peor_individuo_del_rango(rango):
     return peor_individuo
 
 # Aplica el algoritmo NSGA-II de acuerdo a los datos que se reciben
-def alg_NSGA2(num_nodos, num_camiones, coordenadas, horario, capacidad, matriz_distancias):    
+def alg_NSGA2(num_nodos, num_camiones, coordenadas, horario, capacidad, matriz_distancias=None):    
+    # Reiniciar métricas globales en cada ejecución para evitar que se acumulen
+    # entre peticiones HTTP o ejecuciones locales.
+    global y_mejor, y_mejor_actual, y_promedio, y_peor, y_peor_actual
+    global trayectos_soluciones, cargas_soluciones, tiempos_soluciones
+    global MATRIZ_DISTANCIAS_GLOBAL, COORD_A_INDICE_GLOBAL
+    y_mejor = []
+    y_mejor_actual = []
+    y_promedio = []
+    y_peor = []
+    y_peor_actual = []
+    trayectos_soluciones = []
+    cargas_soluciones = []
+    tiempos_soluciones = []
+    MATRIZ_DISTANCIAS_GLOBAL = matriz_distancias
+    COORD_A_INDICE_GLOBAL = {tuple(nodo[0]): indice for indice, nodo in enumerate(coordenadas)}
+
     mejor_solucion = Individuo(None, 0, 0, 0, 0, [0,None], 0)
     peor_solucion = Individuo(None, 0, 0, 0, 0, [0,None], 0)            
 
@@ -807,7 +874,14 @@ def alg_NSGA2(num_nodos, num_camiones, coordenadas, horario, capacidad, matriz_d
         cargas_soluciones.append(mejor_solucion.evaluacion_carga)
         tiempos_soluciones.append(mejor_solucion.evaluacion_tiempo)
 
-    return mejor_solucion
+    historial_fitness = [
+        {"mejor": mejor, "promedio": promedio}
+        for mejor, promedio in zip(y_mejor, y_promedio)
+    ]
+
+    # Devuelve la población final completa para que main.py pueda construir
+    # el frente de Pareto y los KPIs, más el historial de fitness por generación.
+    return poblacion, historial_fitness
 
 # Función para generar un nombre de archivo único
 def obtener_nombre(base_name, extension, nombre_archivo):

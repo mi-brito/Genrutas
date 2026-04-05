@@ -1,15 +1,15 @@
-# Uncomment to enable Azure Monitor OpenTelemetry
-# Ref: aka.ms/functions-azure-monitor-python
-# azure-monitor-opentelemetry
+# Web Server
+fastapi
+uvicorn[standard]
 
-# Tus librerías existentes
-azure-functions
+# Data & Math
 numpy==1.26.4
 matplotlib==3.7.5
 pandas==2.1.4
-azure-storage-blob
+
+# API & Environment
+requests
 python-dotenv
 
-# Librerías nuevas para el servidor web en Docker
-fastapi
-uvicorn[standard]
+# Optional: Google Cloud logging
+google-cloud-logging
