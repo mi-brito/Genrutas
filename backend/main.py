@@ -13,7 +13,6 @@ import matplotlib.pyplot as plt
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from azure.storage.blob import BlobServiceClient
 
 
 def cargar_dotenv_simple(ruta='.env'):
@@ -32,7 +31,12 @@ cargar_dotenv_simple()
 # Módulos locales
 from alg_nsga2 import preparar_datos_para_algoritmo, alg_NSGA2, crear_matriz_de_distancias_y_tiempos
 
-logging.basicConfig(level=logging.INFO)
+# Configurar logging estructurado para Google Cloud
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # --- Modelos de Datos ---
 
@@ -77,12 +81,42 @@ def generar_grafica_base64(fig):
 # --- Endpoints ---
 
 @app.get("/")
-def read_root():
-    return {"status": "API de optimización funcionando"}
+def health_check():
+    """Health check endpoint para Google Cloud Run."""
+    return {
+        "status": "healthy",
+        "service": "GenRutas Optimizer Engine",
+        "version": "1.0.0",
+        "environment": "Google Cloud Run"
+    }
+
+
+@app.get("/health")
+def detailed_health():
+    """Endpoint de salud con detalles técnicos."""
+    return {
+        "status": "online",
+        "service": "GenRutas Optimizer Engine",
+        "version": "1.0.0",
+        "algorithm": "NSGA-II Multi-Objective Optimization",
+        "capabilities": [
+            "Vehicle Routing Optimization",
+            "Mapbox Distance Matrix Integration",
+            "Environmental Impact Calculation",
+            "Pareto Front Analysis"
+        ]
+    }
 
 @app.post("/optimize")
 async def optimize_route(request_data: OptimizeRequest):
-    logging.info("Petición recibida en /optimize.")
+    logger.info(
+        "Optimization request received",
+        extra={
+            "num_nodes": len(request_data.nodes),
+            "num_vehicles": request_data.numVehicles,
+            "vehicle_capacity": request_data.vehicleCapacity
+        }
+    )
     try:
         # 1. Extracción de datos validados
         nodos = request_data.nodes
@@ -112,17 +146,23 @@ async def optimize_route(request_data: OptimizeRequest):
         )
 
         # 4. Ejecución del Algoritmo
-        logging.info("Solicitando matrices a Mapbox...")
+        logger.info("Requesting Mapbox distance/time matrices")
         matriz_distancias, matriz_tiempos = crear_matriz_de_distancias_y_tiempos(coordenadas)
         
         if not matriz_distancias or not matriz_tiempos:
             raise HTTPException(status_code=500, detail="Error al obtener matrices de Mapbox.")
         
-        logging.info("Ejecutando NSGA-II...")
+        logger.info("Executing NSGA-II optimization algorithm")
         poblacion_final, historial_fitness = alg_NSGA2(
             numN, numC, coordenadas, horario, capacidad, matriz_distancias
         )
-        logging.info("Algoritmo finalizado.")
+        logger.info(
+            "Optimization completed successfully",
+            extra={
+                "solutions_found": len(poblacion_final),
+                "generations": len(historial_fitness)
+            }
+        )
 
         # 5. Generación de Gráficas (Opcional)
         # urls_imagenes = {}
@@ -252,75 +292,13 @@ async def optimize_route(request_data: OptimizeRequest):
         }
 
     except Exception as e:
-        logging.error(f"Error en ejecución: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+        logger.error(
+            f"Optimization failed: {str(e)}",
+            exc_info=True,
+            extra={"error_type": type(e).__name__}
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Optimization error: {str(e)}"
+        )
 
-# --- Funciones Auxiliares ---
-
-def generar_y_subir_graficas(poblacion_final, historial_fitness, connection_string):
-    urls_imagenes = {}
-    if not historial_fitness or not poblacion_final:
-        return urls_imagenes
-
-    container_name = f"resultados-optimizacion-{random.randint(10000, 99999)}"
-    blob_service_client = BlobServiceClient.from_connection_string(connection_string)
-    
-    try:
-        blob_service_client.create_container(container_name, public_access='blob')
-    except Exception as e:
-        print(f"Contenedor existente o error: {e}")
-
-    # Gráfica 1: Progreso
-    plt.figure(figsize=(10, 6))
-    mejor_historial = [h['mejor'] for h in historial_fitness]
-    promedio_historial = [h['promedio'] for h in historial_fitness]
-    plt.plot(mejor_historial, label='Mejor Solución', color='blue')
-    plt.plot(promedio_historial, label='Promedio', color='green', linestyle='--')
-    plt.title('Progreso de la Optimización')
-    plt.legend()
-    plt.grid(True)
-    
-    buffer1 = io.BytesIO()
-    plt.savefig(buffer1, format='png')
-    plt.close()
-    buffer1.seek(0)
-    
-    blob_client1 = blob_service_client.get_blob_client(container=container_name, blob="progreso.png")
-    blob_client1.upload_blob(buffer1, overwrite=True)
-    urls_imagenes['progreso_optimizacion'] = blob_client1.url
-
-    # Gráfica 2: Frente de Pareto
-    plt.figure(figsize=(10, 6))
-    
-    try:
-        mejor_solucion = min(poblacion_final, key=lambda x: x.evaluacion)
-    except (ValueError, AttributeError):
-        mejor_solucion = None
-
-    otras_soluciones = [ind for ind in poblacion_final if ind is not mejor_solucion]
-
-    if otras_soluciones:
-        cargas = [ind.evaluacion_carga for ind in otras_soluciones]
-        distancias = [ind.evaluacion_trayecto for ind in otras_soluciones]
-        plt.scatter(cargas, distancias, alpha=0.6, color='blue', label='Soluciones')
-
-    if mejor_solucion:
-        plt.scatter(mejor_solucion.evaluacion_carga, mejor_solucion.evaluacion_trayecto, 
-                    color='red', s=150, zorder=5, edgecolors='black', label='Mejor Solución')
-
-    plt.title('Frente de Pareto')
-    plt.xlabel('Carga Total')
-    plt.ylabel('Distancia Total')
-    plt.legend()
-    plt.grid(True)
-
-    buffer2 = io.BytesIO()
-    plt.savefig(buffer2, format='png')
-    plt.close()
-    buffer2.seek(0)
-
-    blob_client2 = blob_service_client.get_blob_client(container=container_name, blob="pareto.png")
-    blob_client2.upload_blob(buffer2, overwrite=True)
-    urls_imagenes['soluciones_finales'] = blob_client2.url
-
-    return urls_imagenes
