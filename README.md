@@ -37,7 +37,3 @@ cp .env.example .env
 docker-compose up --build
 ```
 
-API y docs:
-- `http://localhost:8000`
-- `http://localhost:8000/docs`
-
