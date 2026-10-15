@@ -84,4 +84,7 @@ export interface OptimizationResult {
   paretoFront: ParetoSolution[];
   coordenadas_puntos: { [key: number]: [number, number] };
   graficas: Graficas;
+  // 'motor' = respuesta del NSGA-II; 'simulado' = respaldo sin backend.
+  fuente?: 'motor' | 'simulado';
+  aviso?: string | null;
 }

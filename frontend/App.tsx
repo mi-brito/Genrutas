@@ -4,7 +4,7 @@ import InteractiveMap from './components/InteractiveMap';
 import ControlPanel from './components/ControlPanel';
 import ResultsDisplay from './components/ResultsDisplay';
 import { Node, OptimizationResult, ParetoSolution } from './types';
-import { optimizeRoutes } from './services/mockApi';
+import { optimizeRoutes } from './services/api';
 import ProjectReport from './components/ProjectReport';
 
 // Defines the structure of the scenario file for saving and loading.
@@ -109,6 +109,7 @@ const App: React.FC = () => {
       );
       
       setOptimizationResult(result);
+      setInfoMessage(result.aviso ?? null);
       if (result.paretoFront.length > 0) {
         setSelectedSolution(result.paretoFront[0]);
       }
