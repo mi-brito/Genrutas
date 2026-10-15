@@ -85,6 +85,43 @@ def crear_matriz_de_distancias_y_tiempos(coordenadas):
         return None, None
     
 
+def crear_matriz_haversine(coordenadas, factor_desvio=1.3, velocidad_kmh=20.0):
+    """
+    Alternativa sin API externa: distancia en línea recta (haversine) multiplicada
+    por un factor de desvío urbano, y tiempo con una velocidad promedio.
+    Se usa cuando no hay MAPBOX_API_KEY o cuando hay más de 25 puntos
+    (límite de la Matrix API de Mapbox). Devuelve metros y segundos.
+    """
+    radio_tierra_m = 6371000.0
+    puntos = [c[0] for c in coordenadas]
+    n = len(puntos)
+    distancias = [[0.0] * n for _ in range(n)]
+    tiempos = [[0.0] * n for _ in range(n)]
+    velocidad_ms = velocidad_kmh * 1000.0 / 3600.0
+    for i in range(n):
+        lat1, lon1 = math.radians(puntos[i][0]), math.radians(puntos[i][1])
+        for j in range(n):
+            if i == j:
+                continue
+            lat2, lon2 = math.radians(puntos[j][0]), math.radians(puntos[j][1])
+            a = (math.sin((lat2 - lat1) / 2) ** 2
+                 + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2)
+            d = 2 * radio_tierra_m * math.asin(math.sqrt(a)) * factor_desvio
+            distancias[i][j] = d
+            tiempos[i][j] = d / velocidad_ms
+    return distancias, tiempos
+
+
+def obtener_matrices(coordenadas):
+    """Usa Mapbox si hay llave y caben los puntos; si no, la alternativa haversine."""
+    if os.getenv("MAPBOX_API_KEY") and len(coordenadas) <= 25:
+        distancias, tiempos = crear_matriz_de_distancias_y_tiempos(coordenadas)
+        if distancias and tiempos:
+            return distancias, tiempos, "mapbox"
+    distancias, tiempos = crear_matriz_haversine(coordenadas)
+    return distancias, tiempos, "haversine"
+
+
 # --- Función para preparar los datos del frontend para el algoritmo ---
 def preparar_datos_para_algoritmo(nodos, capacidad_vehiculo, ventana_tiempo, num_camiones):
     """

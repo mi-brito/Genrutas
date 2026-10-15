@@ -13,3 +13,5 @@ python-dotenv
 
 # Optional: Google Cloud logging
 google-cloud-logging
+# Pruebas
+httpx
