@@ -30,7 +30,7 @@ def cargar_dotenv_simple(ruta='.env'):
 
 cargar_dotenv_simple()
 # Módulos locales
-from alg_nsga2 import preparar_datos_para_algoritmo, alg_NSGA2, obtener_matrices
+from alg_nsga2 import preparar_datos_para_algoritmo, alg_NSGA2, obtener_matrices, simular_ruta
 
 # Configurar logging estructurado para Google Cloud
 logging.basicConfig(
@@ -63,6 +63,7 @@ class OptimizeRequest(BaseModel):
     # Camión eléctrico.
     vehicleAutonomy: Optional[float] = Field(default=None, description="Batería útil en kWh.")
     vehicleConsumption: Optional[float] = Field(default=None, description="Consumo en kWh/km.")
+    chargingPowerKw: float = Field(default=60.0, description="Potencia del cargador en kW.")
 
 # --- Configuración de la App ---
 
@@ -94,18 +95,20 @@ def normalizar_hora(hora: str) -> str:
     return hora if hora.count(':') == 2 else hora + ':00'
 
 
+OBJETIVOS = ("distancia", "tiempo", "energia_kwh")
+
+
 def frente_no_dominado(soluciones):
-    """Filtra soluciones factibles no dominadas en (distancia, tiempo), sin duplicados."""
+    """Filtra soluciones no dominadas en distancia, tiempo y energía, sin duplicados."""
     unicas = {}
     for s in soluciones:
-        clave = (round(s["distancia"], 1), round(s["tiempo"], 1))
+        clave = tuple(round(s[k], 1) for k in OBJETIVOS)
         unicas.setdefault(clave, s)
     candidatas = list(unicas.values())
     frente = []
     for a in candidatas:
         dominada = any(
-            b["distancia"] <= a["distancia"] and b["tiempo"] <= a["tiempo"]
-            and (b["distancia"] < a["distancia"] or b["tiempo"] < a["tiempo"])
+            all(b[k] <= a[k] for k in OBJETIVOS) and any(b[k] < a[k] for k in OBJETIVOS)
             for b in candidatas if b is not a
         )
         if not dominada:
@@ -158,6 +161,8 @@ async def optimize_route(request_data: OptimizeRequest):
         if not contenedores:
             raise HTTPException(status_code=400, detail="Se necesita al menos un contenedor.")
         nodos = [depositos[0]] + contenedores
+        estaciones = [n for n in request_data.nodes if n.type == 'charging_station']
+        todos_nodos = nodos + estaciones  # mismo orden que las matrices
 
         capacidad_vehiculo = request_data.vehicleCapacity
         num_vehiculos = min(request_data.numVehicles, len(contenedores))
@@ -171,21 +176,30 @@ async def optimize_route(request_data: OptimizeRequest):
 
         # 3. Conversiones para el algoritmo
         nodos_dict = [{"id": n.id, "lat": n.lat, "lng": n.lng, "demanda": n.demanda} for n in nodos]
-        id_a_demanda = {n.id: n.demanda for n in nodos}
-        id_a_indice = {n.id: i for i, n in enumerate(nodos)}
-        coord_a_id = {(n.lat, n.lng): n.id for n in nodos}
 
         numN, numC, capacidad, coordenadas, horario = preparar_datos_para_algoritmo(
             nodos_dict, capacidad_vehiculo, time_window_formateado, num_vehiculos
         )
 
-        # 4. Matrices de distancia y tiempo
-        matriz_distancias, matriz_tiempos, fuente_matriz = obtener_matrices(coordenadas)
+        # 4. Matrices de distancia y tiempo (contenedores y estaciones de carga)
+        coordenadas_estaciones = [[(n.lat, n.lng), 0] for n in estaciones]
+        matriz_distancias, matriz_tiempos, fuente_matriz = obtener_matrices(coordenadas + coordenadas_estaciones)
         logger.info("Matrices de distancia: %s", fuente_matriz)
+
+        fin_dt = datetime.strptime(time_window_formateado[1], '%H:%M:%S')
+        params_ev = {
+            "autonomia_kwh": request_data.vehicleAutonomy,
+            "consumo_kwh_km": request_data.vehicleConsumption or 1.2,
+            "potencia_carga_kw": request_data.chargingPowerKw,
+            "servicio_s": tiempo_servicio_min * 60,
+            "inicio_s": hora_inicio_dt.hour * 3600 + hora_inicio_dt.minute * 60,
+            "fin_s": fin_dt.hour * 3600 + fin_dt.minute * 60,
+        }
 
         logger.info("Executing NSGA-II optimization algorithm")
         poblacion_final, historial_fitness = alg_NSGA2(
-            numN, numC, coordenadas, horario, capacidad, matriz_distancias
+            numN, numC, coordenadas, horario, capacidad, matriz_distancias,
+            matriz_tiempos=matriz_tiempos, estaciones=coordenadas_estaciones, params_ev=params_ev,
         )
 
         # 5. Gráficas
@@ -204,56 +218,40 @@ async def optimize_route(request_data: OptimizeRequest):
 
         for individuo in poblacion_final:
             rutas_formateadas = []
-            distancia_total = 0.0
-            tiempo_max = 0.0
+            distancia_total = tiempo_max = energia_total = 0.0
             factible = True
 
             for camion_idx, camion_data in enumerate(individuo.solucion or []):
                 trayecto_coords = camion_data[0]
-                nodos_secuencia = [coord_a_id.get(tuple(p[0]), "desconocido") for p in trayecto_coords]
-                if len(nodos_secuencia) <= 2:
-                    continue  # camión sin contenedores
-
-                itinerario_steps = []
-                tiempo_acumulado_seg = 0.0
-                distancia_ruta = 0.0
-                carga_acumulada = 0
-                itinerario_steps.append({
-                    "nodeId": nodos_secuencia[0],
-                    "arrivalTime": hora_inicio_dt.strftime('%H:%M'),
-                    "departureTime": hora_inicio_dt.strftime('%H:%M'),
-                    "cumulativeLoad": 0,
-                })
-                for j in range(len(nodos_secuencia) - 1):
-                    i_o = id_a_indice.get(nodos_secuencia[j])
-                    i_d = id_a_indice.get(nodos_secuencia[j + 1])
-                    if i_o is not None and i_d is not None:
-                        tiempo_acumulado_seg += matriz_tiempos[i_o][i_d] or 0
-                        distancia_ruta += matriz_distancias[i_o][i_d] or 0
-                    hora_llegada = hora_inicio_dt + timedelta(seconds=tiempo_acumulado_seg)
-                    if j < len(nodos_secuencia) - 2:
-                        tiempo_acumulado_seg += tiempo_servicio_min * 60
-                    hora_salida = hora_inicio_dt + timedelta(seconds=tiempo_acumulado_seg)
-                    carga_acumulada += id_a_demanda.get(nodos_secuencia[j + 1], 0)
-                    itinerario_steps.append({
-                        "nodeId": nodos_secuencia[j + 1],
-                        "arrivalTime": hora_llegada.strftime('%H:%M'),
-                        "departureTime": hora_salida.strftime('%H:%M'),
-                        "cumulativeLoad": carga_acumulada,
+                if len(trayecto_coords) <= 2:
+                    continue  # vehículo sin paradas
+                r = simular_ruta(trayecto_coords)
+                pasos = []
+                for paso in r["pasos"]:
+                    nodo = todos_nodos[paso["idx"]]
+                    pasos.append({
+                        "nodeId": nodo.id,
+                        "type": nodo.type,
+                        "arrivalTime": (hora_inicio_dt + timedelta(seconds=paso["llegada_s"])).strftime('%H:%M'),
+                        "departureTime": (hora_inicio_dt + timedelta(seconds=paso["salida_s"])).strftime('%H:%M'),
+                        "cumulativeLoad": paso["carga"],
+                        "energia_recargada_kWh": paso["kwh"],
                     })
-
-                if carga_acumulada > capacidad_vehiculo:
+                if (r["carga"] > capacidad_vehiculo or r["bateria_insuficiente"]
+                        or params_ev["inicio_s"] + r["tiempo_s"] > params_ev["fin_s"]):
                     factible = False
-                distancia_total += distancia_ruta
-                tiempo_max = max(tiempo_max, tiempo_acumulado_seg)
+                distancia_total += r["distancia_m"]
+                energia_total += r["energia_kwh"]
+                tiempo_max = max(tiempo_max, r["tiempo_s"])
                 rutas_formateadas.append({
                     "camionId": camion_idx + 1,
-                    "nodos": nodos_secuencia,
-                    "path": [(p[0][0], p[0][1]) for p in trayecto_coords],
-                    "steps": itinerario_steps,
-                    "distancia_m": round(distancia_ruta, 1),
-                    "tiempo_s": round(tiempo_acumulado_seg, 1),
-                    "carga": carga_acumulada,
+                    "nodos": [p["nodeId"] for p in pasos],
+                    "steps": pasos,
+                    "distancia_m": round(r["distancia_m"], 1),
+                    "tiempo_s": round(r["tiempo_s"], 1),
+                    "energia_kwh": round(r["energia_kwh"], 2),
+                    "recargas": len(r["recargas"]),
+                    "carga": r["carga"],
                 })
 
             # Impacto diésel (compatibilidad); el frontend calcula el eléctrico.
@@ -265,6 +263,7 @@ async def optimize_route(request_data: OptimizeRequest):
             soluciones.append({
                 "distancia": round(distancia_total, 1),
                 "tiempo": round(tiempo_max, 1),
+                "energia_kwh": round(energia_total, 2),
                 "carga_total": sum(r["carga"] for r in rutas_formateadas),
                 "factible": factible,
                 "routes": rutas_formateadas,
@@ -274,8 +273,8 @@ async def optimize_route(request_data: OptimizeRequest):
         factibles = [s for s in soluciones if s["factible"]]
         aviso = None
         if not factibles:
-            aviso = ("Ninguna solución respeta la capacidad de los camiones; "
-                     "se muestran las mejores encontradas. Agrega camiones o capacidad.")
+            aviso = ("Ninguna solución respeta capacidad, horario y batería a la vez; "
+                     "se muestran las mejores encontradas. Agrega vehículos, batería o estaciones de carga.")
             factibles = soluciones
         frente = frente_no_dominado(factibles)[:8]
         for i, s in enumerate(frente):
@@ -300,7 +299,7 @@ async def optimize_route(request_data: OptimizeRequest):
             "fuenteMatriz": fuente_matriz,
             "aviso": aviso,
             "paretoFront": frente,
-            "coordenadas_nodos": {str(n.id): (n.lat, n.lng) for n in nodos},
+            "coordenadas_nodos": {str(n.id): (n.lat, n.lng) for n in todos_nodos},
             "graficas": {
                 "progreso_optimizacion": progreso_base64,
                 "soluciones_finales": pareto_base64,

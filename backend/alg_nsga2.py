@@ -206,7 +206,7 @@ from datetime import datetime, time, timedelta
 import pandas as pd
 
 # Nueva tupla de tipo Individuo que tiene su solucion y la evaluacion de la solucion
-Individuo = namedtuple('Individuo', ['solucion', 'evaluacion', 'evaluacion_trayecto', 'evaluacion_carga', 'evaluacion_tiempo', 'dominacion', 'distancia'])
+Individuo = namedtuple('Individuo', ['solucion', 'evaluacion', 'evaluacion_trayecto', 'evaluacion_energia', 'evaluacion_tiempo', 'dominacion', 'distancia'])
 
 # Matrices y mapeos globales usados durante la evaluación.
 # Se cargan en alg_NSGA2() para que las funciones internas no tengan que
@@ -341,6 +341,122 @@ def obtener_distancia_entre_puntos(punto_origen, punto_destino):
 
     return distancia_euclidiana(punto_origen[0], punto_destino[0])
 
+# --- Simulación eléctrica de una ruta -------------------------------------
+# Parámetros del vehículo eléctrico. alg_NSGA2() los actualiza en cada corrida.
+MATRIZ_TIEMPOS_GLOBAL = None
+ESTACIONES_GLOBAL = []          # índices (en la matriz) de las estaciones de carga
+PARAMS_EV = {
+    "autonomia_kwh": None,      # batería útil; None = sin restricción de batería
+    "consumo_kwh_km": 1.2,      # consumo base del vehículo vacío
+    "factor_carga": 0.10,       # +10 % de consumo con el vehículo lleno
+    "potencia_carga_kw": 60.0,  # cargador
+    "reserva": 0.10,            # no bajar de 10 % de batería
+    "servicio_s": 300,          # tiempo por parada
+    "inicio_s": 6 * 3600,       # hora de salida (segundos desde 00:00)
+    "fin_s": 22 * 3600,         # fin de la ventana operativa
+    "capacidad": 0,
+    "velocidad_kmh": 20.0,      # solo si no hay matriz de tiempos
+}
+
+
+def _indice(punto):
+    return COORD_A_INDICE_GLOBAL.get(tuple(punto[0]))
+
+
+def _dist_idx(i, j):
+    if MATRIZ_DISTANCIAS_GLOBAL is not None and i is not None and j is not None:
+        d = MATRIZ_DISTANCIAS_GLOBAL[i][j]
+        if d is not None:
+            return d
+    return 0.0
+
+
+def _tiempo_idx(i, j, distancia_m):
+    if MATRIZ_TIEMPOS_GLOBAL is not None and i is not None and j is not None:
+        t = MATRIZ_TIEMPOS_GLOBAL[i][j]
+        if t is not None:
+            return t
+    return distancia_m / (PARAMS_EV["velocidad_kmh"] * 1000 / 3600)
+
+
+def simular_ruta(trayecto):
+    """
+    Recorre la ruta de un vehículo eléctrico y devuelve distancia (m), tiempo (s),
+    energía (kWh), carga, recargas y la secuencia de paradas. Si la batería
+    bajaría de la reserva, el vehículo se desvía a la estación de carga que
+    menos alarga el trayecto y recarga al 100 %.
+    """
+    p = PARAMS_EV
+    autonomia = p["autonomia_kwh"]
+    consumo = p["consumo_kwh_km"]
+    capacidad = p["capacidad"] or 1
+    bateria = autonomia if autonomia else math.inf
+    reserva = (autonomia or 0) * p["reserva"]
+
+    distancia = tiempo = energia = 0.0
+    carga = 0
+    bateria_insuficiente = False
+    recargas = []
+    idx_prev = _indice(trayecto[0])
+    pasos = [{"idx": idx_prev, "llegada_s": 0.0, "salida_s": 0.0, "carga": 0, "tipo": "base", "kwh": 0.0}]
+
+    def gasto(d_m):
+        return d_m / 1000 * consumo * (1 + p["factor_carga"] * min(carga, capacidad) / capacidad)
+
+    for k in range(1, len(trayecto)):
+        punto = trayecto[k]
+        idx = _indice(punto)
+        d = _dist_idx(idx_prev, idx)
+        e = gasto(d)
+
+        if autonomia and bateria - e < reserva and ESTACIONES_GLOBAL:
+            # Desvío a la estación que menos alarga el tramo.
+            est = min(ESTACIONES_GLOBAL, key=lambda s: _dist_idx(idx_prev, s) + _dist_idx(s, idx))
+            d1 = _dist_idx(idx_prev, est)
+            e1 = gasto(d1)
+            distancia += d1
+            tiempo += _tiempo_idx(idx_prev, est, d1)
+            energia += e1
+            bateria -= e1
+            if bateria < 0:
+                bateria_insuficiente = True
+            kwh = autonomia - max(bateria, 0)
+            llegada = tiempo
+            tiempo += kwh / p["potencia_carga_kw"] * 3600
+            bateria = autonomia
+            recargas.append({"estacion": est, "kwh": round(kwh, 2), "minutos": round(kwh / p["potencia_carga_kw"] * 60, 1)})
+            pasos.append({"idx": est, "llegada_s": llegada, "salida_s": tiempo, "carga": carga, "tipo": "recarga", "kwh": round(kwh, 2)})
+            idx_prev = est
+            d = _dist_idx(idx_prev, idx)
+            e = gasto(d)
+
+        distancia += d
+        tiempo += _tiempo_idx(idx_prev, idx, d)
+        energia += e
+        bateria -= e
+        if bateria < 0:
+            bateria_insuficiente = True
+
+        llegada = tiempo
+        es_final = k == len(trayecto) - 1
+        if not es_final:
+            carga += punto[1]
+            tiempo += p["servicio_s"]
+        pasos.append({"idx": idx, "llegada_s": llegada, "salida_s": tiempo, "carga": carga,
+                      "tipo": "base" if es_final else "parada", "kwh": 0.0})
+        idx_prev = idx
+
+    return {
+        "distancia_m": distancia,
+        "tiempo_s": tiempo,
+        "energia_kwh": energia,
+        "carga": carga,
+        "recargas": recargas,
+        "bateria_insuficiente": bateria_insuficiente,
+        "pasos": pasos,
+    }
+
+
 # Evalua el recorrido realizado por un camion, de acuerdo al trafico que hubo y la carga de residuos que se recogieron
 def evaluar_recorrido(trayecto):
     trafico = 0
@@ -353,26 +469,27 @@ def evaluar_recorrido(trayecto):
     return trafico, num_residuos
 
 # Evalua el trabajo de un camion, con una capacidad de carga limitada, de acuerdo al recorrido que hizo y el tiempo que le llevo en hacerlo
-def evaluar_camion(camion, capacidad, penalizacion=1000):    
-    total_de_trafico, total_residuos = evaluar_recorrido(camion[0])
-    evaluacion = total_de_trafico
-    evaluacion_trafico = total_de_trafico
-    evaluacion_carga = total_residuos
-    # Evalua la carga total del camion
-    if total_residuos > capacidad:
-        evaluacion += evaluacion * penalizacion
-        evaluacion_carga += evaluacion_carga * penalizacion
-
-    # Evalua el tiempo del camion en finalizar
-    horario = camion[1]
-    hora_de_termino = camion[2]
-    hora_dt = time.fromisoformat(hora_de_termino)
-    evaluacion_tiempo = 1
-    if hora_dt > horario[1]:
-        evaluacion += evaluacion * penalizacion
-        evaluacion_tiempo += evaluacion_tiempo * penalizacion
-
-    return evaluacion, evaluacion_trafico, evaluacion_carga, evaluacion_tiempo
+def evaluar_camion(camion, capacidad, penalizacion=1000):
+    """
+    Tres objetivos a minimizar: distancia (m), energía (kWh) y tiempo de la ruta (s).
+    El tiempo sale del recorrido real (matriz de tiempos + servicio + recargas).
+    Cada restricción violada (capacidad, ventana horaria, batería) multiplica
+    los tres objetivos para empujar la solución hacia atrás en el frente.
+    """
+    r = simular_ruta(camion[0])
+    violaciones = 0
+    if r["carga"] > capacidad:
+        violaciones += 1
+    if PARAMS_EV["inicio_s"] + r["tiempo_s"] > PARAMS_EV["fin_s"]:
+        violaciones += 1
+    if r["bateria_insuficiente"] or (PARAMS_EV["autonomia_kwh"] and not ESTACIONES_GLOBAL
+                                     and r["energia_kwh"] > PARAMS_EV["autonomia_kwh"]):
+        violaciones += 1
+    factor = 1 + penalizacion * violaciones
+    evaluacion_trafico = r["distancia_m"] * factor
+    evaluacion_energia = r["energia_kwh"] * factor
+    evaluacion_tiempo = r["tiempo_s"] * factor
+    return evaluacion_trafico, evaluacion_trafico, evaluacion_energia, evaluacion_tiempo
 
 # Evalua una solucion, que representa los recorridos realizados por la cantidad de camiones que se definio con sus horarios establecidos de cada uno
 def evaluar_individuo(individuo, capacidad):        
@@ -388,7 +505,7 @@ def evaluar_individuo(individuo, capacidad):
         eval_carga += eval_C
         eval_tiempo += eval_Ti
 
-    individuo = individuo._replace(evaluacion=eval_ind, evaluacion_trayecto=eval_trafico, evaluacion_carga=eval_carga, evaluacion_tiempo=eval_tiempo)
+    individuo = individuo._replace(evaluacion=eval_ind, evaluacion_trayecto=eval_trafico, evaluacion_energia=eval_carga, evaluacion_tiempo=eval_tiempo)
     return individuo
 
 # Evalua a una poblacion de soluciones
@@ -668,14 +785,18 @@ def promedio(poblacion):
 # A(x1|y1) domina a B(x2|y2) cuando:
 # (x1 ≤ x2 y y1 ≤ y2) y (x1 < x2 o y1 < y2)
 def ordenamiento_no_determinado(poblacion):
+    # Reinicia los contadores: los sobrevivientes traen los de la generación anterior
+    for k in range(len(poblacion)):
+        poblacion[k] = poblacion[k]._replace(dominacion=[0, None])
     # Se calcula lo dominacion de cada individuo
-    i = 0    
+    i = 0
     while i < len(poblacion):     
         dominados = []   
         j = 0
         while j < len(poblacion):              
             if poblacion[i] != poblacion[j]:
-                if (poblacion[i].evaluacion_trayecto >= poblacion[j].evaluacion_trayecto and poblacion[i].evaluacion_carga >= poblacion[j].evaluacion_carga and poblacion[i].evaluacion_tiempo >= poblacion[j].evaluacion_tiempo) and (poblacion[i].evaluacion_trayecto > poblacion[j].evaluacion_trayecto or poblacion[i].evaluacion_carga > poblacion[j].evaluacion_carga or poblacion[i].evaluacion_tiempo > poblacion[j].evaluacion_tiempo):                    
+                # i domina a j: no es peor en ningún objetivo y es mejor en al menos uno (todos se minimizan)
+                if (poblacion[i].evaluacion_trayecto <= poblacion[j].evaluacion_trayecto and poblacion[i].evaluacion_energia <= poblacion[j].evaluacion_energia and poblacion[i].evaluacion_tiempo <= poblacion[j].evaluacion_tiempo) and (poblacion[i].evaluacion_trayecto < poblacion[j].evaluacion_trayecto or poblacion[i].evaluacion_energia < poblacion[j].evaluacion_energia or poblacion[i].evaluacion_tiempo < poblacion[j].evaluacion_tiempo):                    
                     dominados.append(j)
                     dominacion = list(poblacion[i].dominacion)
                     poblacion[i] = poblacion[i]._replace(dominacion=[dominacion[0], dominados])  
@@ -747,7 +868,7 @@ def ordenamiento_por_distancia_de_aglomeracion(poblacion, rangos, capacidad):
         ind = 0
         while ind < len(rango_de_poblacion):
             if rango_de_poblacion[ind] is not rango_de_poblacion[0] and rango_de_poblacion[ind] is not rango_de_poblacion[len(rango_de_poblacion)-1]:
-                distancia_ind = poblacion[ind].distancia
+                distancia_ind = rango_de_poblacion[ind].distancia
                 if rango_de_poblacion[len(rango_de_poblacion)-1].evaluacion - rango_de_poblacion[0].evaluacion != 0:
                     rango_de_poblacion[ind] = rango_de_poblacion[ind]._replace(distancia=distancia_ind+(rango_de_poblacion[ind+1].evaluacion - rango_de_poblacion[ind-1].evaluacion)/(rango_de_poblacion[len(rango_de_poblacion)-1].evaluacion - rango_de_poblacion[0].evaluacion))                                
             ind += 1
@@ -787,7 +908,9 @@ def obtiene_peor_individuo_del_rango(rango):
     return peor_individuo
 
 # Aplica el algoritmo NSGA-II de acuerdo a los datos que se reciben
-def alg_NSGA2(num_nodos, num_camiones, coordenadas, horario, capacidad, matriz_distancias=None):    
+def alg_NSGA2(num_nodos, num_camiones, coordenadas, horario, capacidad, matriz_distancias=None,
+              matriz_tiempos=None, estaciones=None, params_ev=None):
+    """estaciones: lista [((lat, lng), 0), ...] que va DESPUÉS de coordenadas en las matrices."""
     # Reiniciar métricas globales en cada ejecución para evitar que se acumulen
     # entre peticiones HTTP o ejecuciones locales.
     global y_mejor, y_mejor_actual, y_promedio, y_peor, y_peor_actual
@@ -801,8 +924,14 @@ def alg_NSGA2(num_nodos, num_camiones, coordenadas, horario, capacidad, matriz_d
     trayectos_soluciones = []
     cargas_soluciones = []
     tiempos_soluciones = []
+    global MATRIZ_TIEMPOS_GLOBAL, ESTACIONES_GLOBAL, PARAMS_EV
     MATRIZ_DISTANCIAS_GLOBAL = matriz_distancias
-    COORD_A_INDICE_GLOBAL = {tuple(nodo[0]): indice for indice, nodo in enumerate(coordenadas)}
+    MATRIZ_TIEMPOS_GLOBAL = matriz_tiempos
+    estaciones = estaciones or []
+    todos = list(coordenadas) + list(estaciones)
+    COORD_A_INDICE_GLOBAL = {tuple(nodo[0]): indice for indice, nodo in enumerate(todos)}
+    ESTACIONES_GLOBAL = list(range(len(coordenadas), len(todos))) if matriz_distancias is not None else []
+    PARAMS_EV = {**PARAMS_EV, "capacidad": int(capacidad), **(params_ev or {})}
 
     mejor_solucion = Individuo(None, 0, 0, 0, 0, [0,None], 0)
     peor_solucion = Individuo(None, 0, 0, 0, 0, [0,None], 0)            
@@ -902,13 +1031,13 @@ def alg_NSGA2(num_nodos, num_camiones, coordenadas, horario, capacidad, matriz_d
     # Recupera las evaluaciones de cada individuo de la poblacion final
     for individuo in poblacion:
         trayectos_soluciones.append(individuo.evaluacion_trayecto)
-        cargas_soluciones.append(individuo.evaluacion_carga)
+        cargas_soluciones.append(individuo.evaluacion_energia)
         tiempos_soluciones.append(individuo.evaluacion_tiempo)
 
     # Se agrega las evaluaciones de la mejor solucion que se haya encontrado durante todo el proceso
     if mejor_solucion != mejor_solucion_actual:
         trayectos_soluciones.append(mejor_solucion.evaluacion_trayecto)
-        cargas_soluciones.append(mejor_solucion.evaluacion_carga)
+        cargas_soluciones.append(mejor_solucion.evaluacion_energia)
         tiempos_soluciones.append(mejor_solucion.evaluacion_tiempo)
 
     historial_fitness = [

@@ -8,6 +8,8 @@ const API_URL: string = (((import.meta as any).env?.VITE_API_URL as string) ?? '
 // Respuesta del backend (backend/main.py)
 interface PasoBackend {
   nodeId: number | string;
+  type?: 'depot' | 'container' | 'charging_station';
+  energia_recargada_kWh?: number;
   arrivalTime: string;
   departureTime: string;
   cumulativeLoad: number;
@@ -18,6 +20,8 @@ interface RutaBackend {
   steps: PasoBackend[];
   distancia_m: number;
   tiempo_s: number;
+  energia_kwh?: number;
+  recargas?: number;
   carga: number;
 }
 interface SolucionBackend {
@@ -56,7 +60,6 @@ const adaptarRespuesta = async (
   vehicleConsumption: number,
 ): Promise<OptimizationResult> => {
   const porId = new Map(nodes.map(n => [n.id, n]));
-  const avisosBateria: string[] = [];
   const paretoFront: ParetoSolution[] = [];
 
   for (const sol of data.paretoFront) {
@@ -64,21 +67,20 @@ const adaptarRespuesta = async (
     for (const [idx, r] of sol.routes.entries()) {
       const ids = r.nodos.map(Number);
       const puntos = ids.map(id => porId.get(id)).filter((n): n is Node => Boolean(n));
-      const energia = (r.distancia_m / 1000) * vehicleConsumption;
-      if (energia > vehicleAutonomy && paretoFront.length === 0) {
-        avisosBateria.push(`camión ${r.camionId} necesita ${energia.toFixed(1)} kWh`);
-      }
+      // El backend simula la batería (consumo según carga y recargas); si no viene, se estima.
+      const energia = r.energia_kwh ?? (r.distancia_m / 1000) * vehicleConsumption;
       const steps: RouteStep[] = r.steps.map((s, k) => {
         const nodo = porId.get(Number(s.nodeId));
         return {
           nodeId: Number(s.nodeId),
           lat: nodo?.lat ?? 0,
           lng: nodo?.lng ?? 0,
-          type: nodo?.type ?? 'container',
+          type: s.type ?? nodo?.type ?? 'container',
           arrivalTime: s.arrivalTime,
           departureTime: s.departureTime,
           demandLoaded: k > 0 && nodo?.type === 'container' ? nodo.demand : 0,
           cumulativeLoad: s.cumulativeLoad,
+          energia_recargada_kWh: s.energia_recargada_kWh,
         };
       });
       rutas.push({
@@ -120,8 +122,9 @@ const adaptarRespuesta = async (
   if (data.fuenteMatriz === 'haversine') {
     avisos.push('Distancias estimadas en línea recta con factor urbano (sin Mapbox).');
   }
-  if (avisosBateria.length > 0) {
-    avisos.push(`La batería de ${vehicleAutonomy} kWh no alcanza: ${avisosBateria.join(', ')}. La recarga en ruta aún no está en el algoritmo.`);
+  const recargas = data.paretoFront[0]?.routes.reduce((suma, r) => suma + (r.recargas ?? 0), 0) ?? 0;
+  if (recargas > 0) {
+    avisos.push(`La solución A incluye ${recargas} recarga(s) en ruta con batería de ${vehicleAutonomy} kWh.`);
   }
 
   return {

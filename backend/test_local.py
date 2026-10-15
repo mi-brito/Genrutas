@@ -3,6 +3,7 @@
 # Sin MAPBOX_API_KEY usa la matriz haversine.
 
 import json
+import sys
 import time
 
 from fastapi.testclient import TestClient
@@ -32,7 +33,10 @@ DATOS = {
 }
 
 
-def ejecutar_prueba_local():
+def ejecutar_prueba_local(autonomia=80, consumo=1.2):
+    DATOS["vehicleAutonomy"] = autonomia
+    DATOS["vehicleConsumption"] = consumo
+    print(f"--- Batería {autonomia} kWh, consumo {consumo} kWh/km ---")
     cliente = TestClient(app)
     inicio = time.perf_counter()
     respuesta = cliente.post("/optimize", json=DATOS)
@@ -45,9 +49,13 @@ def ejecutar_prueba_local():
     print(f"Matriz: {cuerpo['fuenteMatriz']} | Aviso: {cuerpo['aviso']}")
     print(f"Soluciones en el frente: {len(cuerpo['paretoFront'])}")
     for s in cuerpo["paretoFront"]:
-        rutas = "; ".join(f"camión {r['camionId']}: {r['nodos']} ({r['carga']} kg)" for r in s["routes"])
-        print(f"  {s['label']}: {s['distancia'] / 1000:.2f} km, {s['tiempo'] / 60:.0f} min -> {rutas}")
+        rutas = "; ".join(
+            f"unidad {r['camionId']}: {r['nodos']} ({r['carga']} pax, {r['energia_kwh']} kWh, {r['recargas']} recargas)"
+            for r in s["routes"])
+        print(f"  {s['label']}: {s['distancia'] / 1000:.2f} km, {s['tiempo'] / 60:.0f} min, {s['energia_kwh']} kWh -> {rutas}")
 
 
 if __name__ == "__main__":
-    ejecutar_prueba_local()
+    autonomia = float(sys.argv[1]) if len(sys.argv) > 1 else 80
+    consumo = float(sys.argv[2]) if len(sys.argv) > 2 else 1.2
+    ejecutar_prueba_local(autonomia, consumo)
