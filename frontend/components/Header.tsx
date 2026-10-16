@@ -12,8 +12,8 @@ const Header: React.FC<HeaderProps> = ({ onShowReport }) => {
         <div className="flex items-center">
             <OptiRutasLogo className="h-10 w-10 text-primary" />
             <div className="ml-3">
-                <h1 className="text-2xl font-bold text-text-main tracking-tight">OptiRutasComplementarias-IA</h1>
-                <p className="text-xs text-text-light">Optimización Inteligente de Rutas Eléctricas</p>
+                <h1 className="text-2xl font-bold text-text-main tracking-tight">GenRutas</h1>
+                <p className="text-xs text-text-light">Pumabús eléctrico y solar para Ciudad Universitaria</p>
             </div>
         </div>
          <button

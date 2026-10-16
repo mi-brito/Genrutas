@@ -1,4 +1,4 @@
-import { Node, OptimizationResult, Route, ParetoSolution, RouteStep, EnvironmentalImpact, CalculationConstants, DailySimulation } from '../types';
+import { Node, OptimizationResult, Route, ParetoSolution, RouteStep } from '../types';
 
 export const ROUTE_COLORS = ['#38BDF8', '#F97316', '#A855F7', '#EC4899', '#84CC16', '#EAB308'];
 
@@ -19,7 +19,7 @@ const addSecondsToTime = (baseTimeInSeconds: number, secondsToAdd: number): stri
 };
 
 
-const calculateRouteSteps = (route: Omit<Route, 'steps' | 'co2_ahorrado_kg' | 'dailySteps'>, allNodes: Node[], startTime: string, serviceTimeMinutes: number): RouteStep[] => {
+const calculateRouteSteps = (route: Omit<Route, 'steps' | 'dailySteps'>, allNodes: Node[], startTime: string, serviceTimeMinutes: number): RouteStep[] => {
     const startTimeInSeconds = timeToSeconds(startTime);
     const serviceTimeSeconds = serviceTimeMinutes * 60;
 
@@ -101,35 +101,6 @@ export const fetchRouteData = async (waypoints: Node[]): Promise<{ geometry: [nu
     }
 };
 
-// Compara el camión eléctrico contra uno a diésel recorriendo la misma distancia.
-// Factores supuestos (revisar y citar fuente antes de presentarlos como dato):
-// red eléctrica 0.35 kg CO2/kWh y diésel 2.31 kg CO2/L, heredados del prototipo.
-export const construirImpacto = (distanciaKm: number, energiaKwh: number, consumoKwhKm: number): EnvironmentalImpact => {
-    const constants: CalculationConstants = {
-      consumo_ev_kwh_per_km: consumoKwhKm,
-      consumo_fossil_l_per_km: 0.12,
-      grid_emission_factor: 0.35,
-      fuel_emission_factor: 2.31,
-      precio_electricidad_mxn_per_kwh: 3.50,
-      precio_combustible_mxn_per_l: 24.00,
-    };
-    const costo_energia_mxn = energiaKwh * constants.precio_electricidad_mxn_per_kwh;
-    const co2_electrico_kg = energiaKwh * constants.grid_emission_factor;
-    const litros_fosil = distanciaKm * constants.consumo_fossil_l_per_km;
-    const costo_combustible_mxn = litros_fosil * constants.precio_combustible_mxn_per_l;
-    const co2_fosil_kg = litros_fosil * constants.fuel_emission_factor;
-    const r2 = (x: number) => parseFloat(x.toFixed(2));
-    return {
-        energia_total_kWh: r2(energiaKwh),
-        costo_energia_mxn: r2(costo_energia_mxn),
-        costo_combustible_mxn: r2(costo_combustible_mxn),
-        co2_electrico_kg: r2(co2_electrico_kg),
-        co2_fosil_kg: r2(co2_fosil_kg),
-        co2_ahorrado_kg: r2(co2_fosil_kg - co2_electrico_kg),
-        constants,
-    };
-};
-
 export const generateDevelopmentData = async (
     nodes: Node[], 
     numberOfVehicles: number, 
@@ -170,7 +141,7 @@ export const generateDevelopmentData = async (
         const distancia_km = distance / 1000;
         const energia_ruta_kWh = distancia_km * vehicleConsumption;
         
-        const basicRoute: Omit<Route, 'steps' | 'co2_ahorrado_kg' | 'dailySteps'> = {
+        const basicRoute: Omit<Route, 'steps' | 'dailySteps'> = {
             vehiculoId: def.vehiculoId,
             color: def.color,
             nodos: def.nodes.map(n => n.id),
@@ -182,20 +153,12 @@ export const generateDevelopmentData = async (
             energia_ruta_kWh: parseFloat(energia_ruta_kWh.toFixed(2)),
         };
         const steps = calculateRouteSteps(basicRoute, nodes, startTime, serviceTime);
-        return { ...basicRoute, steps, co2_ahorrado_kg: 0 }; // co2 saved will be calculated in summary
+        return { ...basicRoute, steps };
     });
 
     const mockRoutes: Route[] = await Promise.all(routePromises);
 
     const total_distancia_km = mockRoutes.reduce((sum, r) => sum + r.distancia, 0) / 1000;
-    const total_energia_kwh = mockRoutes.reduce((sum, r) => sum + r.energia_ruta_kWh, 0);
-    const mockEnvironmentalImpact = construirImpacto(total_distancia_km, total_energia_kwh, vehicleConsumption);
-    const co2_ahorrado_kg = mockEnvironmentalImpact.co2_ahorrado_kg;
-
-    mockRoutes.forEach(route => {
-      const distance_proportion = total_distancia_km > 0 ? (route.distancia / 1000) / total_distancia_km : 0;
-      route.co2_ahorrado_kg = parseFloat((co2_ahorrado_kg * distance_proportion).toFixed(2));
-    });
 
     const mockSolution: ParetoSolution = {
         id: 'sol-mock-dynamic-1', label: 'A',
@@ -203,7 +166,6 @@ export const generateDevelopmentData = async (
         tiempo: mockRoutes.reduce((max, r) => Math.max(max, r.tiempo), 0),
         pasajeros_totales: containers.reduce((sum, c) => sum + c.demand, 0),
         routes_serializadas: mockRoutes,
-        environmentalImpact: mockEnvironmentalImpact,
     };
 
     // --- Daily Simulation Calculation ---
@@ -215,22 +177,11 @@ export const generateDevelopmentData = async (
     if (cycleTimeSeconds > 0 && totalOperatingSeconds > 0) {
         const repetitions = Math.max(1, Math.floor(totalOperatingSeconds / cycleTimeSeconds));
 
-        const environmentalImpact_jornada: EnvironmentalImpact = {
-            ...mockEnvironmentalImpact,
-            energia_total_kWh: parseFloat((mockEnvironmentalImpact.energia_total_kWh * repetitions).toFixed(2)),
-            costo_energia_mxn: parseFloat((mockEnvironmentalImpact.costo_energia_mxn * repetitions).toFixed(2)),
-            costo_combustible_mxn: parseFloat((mockEnvironmentalImpact.costo_combustible_mxn * repetitions).toFixed(2)),
-            co2_electrico_kg: parseFloat((mockEnvironmentalImpact.co2_electrico_kg * repetitions).toFixed(2)),
-            co2_fosil_kg: parseFloat((mockEnvironmentalImpact.co2_fosil_kg * repetitions).toFixed(2)),
-            co2_ahorrado_kg: parseFloat((mockEnvironmentalImpact.co2_ahorrado_kg * repetitions).toFixed(2)),
-        };
-
         mockSolution.dailySimulation = {
             repetitions,
             layover_min,
             total_distancia_jornada_km: parseFloat(((mockSolution.distancia / 1000) * repetitions).toFixed(2)),
             total_pasajeros_jornada: mockSolution.pasajeros_totales * repetitions,
-            environmentalImpact_jornada,
         };
 
         // --- Generate Full Day Itinerary (dailySteps) ---

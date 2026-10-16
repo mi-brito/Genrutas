@@ -3,9 +3,10 @@ import Header from './components/Header';
 import InteractiveMap from './components/InteractiveMap';
 import ControlPanel from './components/ControlPanel';
 import ResultsDisplay from './components/ResultsDisplay';
-import { Node, OptimizationResult, ParetoSolution } from './types';
+import { CapaMapaCU, Node, OptimizationResult, ParetoSolution } from './types';
 import { optimizeRoutes } from './services/api';
 import ProjectReport from './components/ProjectReport';
+import PanelCU from './components/PanelCU';
 
 // Defines the structure of the scenario file for saving and loading.
 export interface Scenario {
@@ -32,13 +33,13 @@ const App: React.FC = () => {
   const [nodes, setNodes] = useState<Node[]>([]);
   
   // State for optimization parameters
-  const [vehicleCapacity, setVehicleCapacity] = useState(30);
+  const [vehicleCapacity, setVehicleCapacity] = useState(85); // Pumabús Volkswagen 11 m (Fundación UNAM)
   const [numberOfVehicles, setNumberOfVehicles] = useState(3);
   const [timeWindow, setTimeWindow] = useState<[string, string]>(['06:00', '10:00']);
   const [startTime, setStartTime] = useState('06:30');
   const [serviceTime, setServiceTime] = useState(5); // in minutes
-  const [vehicleAutonomy, setVehicleAutonomy] = useState(80); // in kWh
-  const [vehicleConsumption, setVehicleConsumption] = useState(0.5); // in kWh/km
+  const [vehicleAutonomy, setVehicleAutonomy] = useState(330); // kWh, autobús eléctrico 12 m del Metrobús (ICCT 2022)
+  const [vehicleConsumption, setVehicleConsumption] = useState(1.0); // kWh/km, proxy del Metrobús (ICCT 2022)
 
   const [nodeTypeToAdd, setNodeTypeToAdd] = useState<NodeTypeToAdd>('container');
   const [optimizationResult, setOptimizationResult] = useState<OptimizationResult | null>(null);
@@ -46,6 +47,9 @@ const App: React.FC = () => {
   const [infoMessage, setInfoMessage] = useState<string | null>(null); 
   const [highlightedRouteId, setHighlightedRouteId] = useState<number | null>(null);
   const [showReport, setShowReport] = useState(false);
+  // 'cu': escenario real de Ciudad Universitaria; 'libre': puntos marcados a mano en el mapa.
+  const [modo, setModo] = useState<'cu' | 'libre'>('cu');
+  const [capaCU, setCapaCU] = useState<CapaMapaCU | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -206,7 +210,16 @@ const App: React.FC = () => {
 
       <main className="flex-grow grid grid-cols-1 lg:grid-cols-3 gap-4 p-4">
         <div className="lg:col-span-1 bg-white rounded-lg shadow-md p-6 overflow-y-auto flex flex-col">
-          {phase === 'setup' && (
+          <div className="flex mb-4 rounded-md border border-gray-200 overflow-hidden text-sm">
+            {([['cu', 'Pumabús CU (datos reales)'], ['libre', 'Escenario libre']] as ['cu' | 'libre', string][]).map(([clave, texto]) => (
+              <button key={clave} onClick={() => setModo(clave)}
+                className={`flex-1 py-2 font-medium ${modo === clave ? 'bg-primary text-white' : 'bg-white text-text-light hover:bg-gray-50'}`}>
+                {texto}
+              </button>
+            ))}
+          </div>
+          {modo === 'cu' && <PanelCU onCapa={setCapaCU} />}
+          {modo === 'libre' && phase === 'setup' && (
             <ControlPanel
               nodes={nodes}
               onOptimize={handleOptimize}
@@ -232,14 +245,14 @@ const App: React.FC = () => {
               setNodeTypeToAdd={setNodeTypeToAdd}
             />
           )}
-          {phase === 'loading' && (
+          {modo === 'libre' && phase === 'loading' && (
              <div className="flex flex-col justify-center items-center h-full">
                 <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-primary"></div>
                 <p className="mt-4 text-text-light">Ejecutando Algoritmo NSGA-II...</p>
                 <p className="text-sm text-secondary">Optimizando rutas para ti.</p>
             </div>
           )}
-          {phase === 'results' && optimizationResult && (
+          {modo === 'libre' && phase === 'results' && optimizationResult && (
             <>
               {infoMessage && (
                 <div className="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-800 p-4 mb-4 rounded-md shadow-sm" role="alert">
@@ -261,10 +274,11 @@ const App: React.FC = () => {
         </div>
         <div className="lg:col-span-2 bg-white rounded-lg shadow-md min-h-[50vh] lg:min-h-0">
           <InteractiveMap
-            nodes={nodes}
-            routes={routesToShow}
-            onAddNode={phase === 'setup' ? handleAddNode : undefined}
+            nodes={modo === 'libre' ? nodes : []}
+            routes={modo === 'libre' ? routesToShow : []}
+            onAddNode={modo === 'libre' && phase === 'setup' ? handleAddNode : undefined}
             highlightedRouteId={highlightedRouteId}
+            capaCU={modo === 'cu' ? capaCU : null}
           />
         </div>
       </main>

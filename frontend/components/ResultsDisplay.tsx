@@ -220,7 +220,7 @@ const ResultsDisplay: React.FC<ResultsDisplayProps> = ({
           </div>
         )}
         {activeTab === 'environment' && selectedSolution && (
-            <EnvironmentalImpact impact={selectedSolution.dailySimulation?.environmentalImpact_jornada ?? selectedSolution.environmentalImpact} />
+            <EnvironmentalImpact impacto={selectedSolution.impacto} parametros={result.parametros} />
         )}
         {activeTab === 'assistant' && selectedSolution && (
           <SmartAssistant solution={selectedSolution} onClose={() => {}}/>

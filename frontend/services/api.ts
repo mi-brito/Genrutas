@@ -1,5 +1,5 @@
-import { Node, OptimizationResult, ParetoSolution, Route, RouteStep } from '../types';
-import { ROUTE_COLORS, construirImpacto, fetchRouteData, generateDevelopmentData } from './mockApi';
+import { Impacto, Node, OptimizationResult, Parametro, ParetoSolution, Route, RouteStep } from '../types';
+import { ROUTE_COLORS, fetchRouteData, generateDevelopmentData } from './mockApi';
 
 // URL del backend FastAPI (local: http://localhost:8080, o la de Cloud Run).
 // Se define en frontend/.env.local como VITE_API_URL.
@@ -31,12 +31,14 @@ interface SolucionBackend {
   tiempo: number;
   carga_total: number;
   routes: RutaBackend[];
+  impacto: Impacto;
 }
 interface RespuestaBackend {
   ejemplarId: string;
   fuenteMatriz: string;
   aviso: string | null;
   paretoFront: SolucionBackend[];
+  parametros: Parametro[];
   graficas: { progreso_optimizacion: string; soluciones_finales: string };
 }
 
@@ -93,18 +95,10 @@ const adaptarRespuesta = async (
         pasajerosTransportados: r.carga,
         ocupacionPromedio: `${vehicleCapacity > 0 ? ((r.carga / vehicleCapacity) * 100).toFixed(1) : '0.0'}%`,
         energia_ruta_kWh: parseFloat(energia.toFixed(2)),
-        co2_ahorrado_kg: 0,
+        recargas: r.recargas ?? 0,
         steps,
       });
     }
-
-    const distanciaKm = sol.distancia / 1000;
-    const energiaTotal = rutas.reduce((suma, r) => suma + r.energia_ruta_kWh, 0);
-    const impacto = construirImpacto(distanciaKm, energiaTotal, vehicleConsumption);
-    rutas.forEach(r => {
-      const proporcion = distanciaKm > 0 ? r.distancia / 1000 / distanciaKm : 0;
-      r.co2_ahorrado_kg = parseFloat((impacto.co2_ahorrado_kg * proporcion).toFixed(2));
-    });
 
     paretoFront.push({
       id: sol.id,
@@ -113,7 +107,7 @@ const adaptarRespuesta = async (
       tiempo: sol.tiempo,
       pasajeros_totales: sol.carga_total,
       routes_serializadas: rutas,
-      environmentalImpact: impacto,
+      impacto: sol.impacto,
     });
   }
 
@@ -132,6 +126,7 @@ const adaptarRespuesta = async (
     paretoFront,
     coordenadas_puntos: nodes.reduce((acc, n) => ({ ...acc, [n.id]: [n.lat, n.lng] }), {}),
     graficas: data.graficas,
+    parametros: data.parametros,
     fuente: 'motor',
     aviso: avisos.length > 0 ? avisos.join(' ') : null,
   };
