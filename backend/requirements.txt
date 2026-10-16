@@ -3,9 +3,13 @@ fastapi
 uvicorn[standard]
 
 # Data & Math
-numpy==1.26.4
-matplotlib==3.7.5
-pandas==2.1.4
+# Versiones mínimas (las fijas de antes no instalan en Python 3.13+)
+numpy>=1.26
+matplotlib>=3.8
+pandas>=2.1
+
+# Pronóstico de demanda (gradient boosting)
+scikit-learn>=1.4
 
 # API & Environment
 requests

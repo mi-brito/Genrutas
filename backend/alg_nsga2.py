@@ -112,13 +112,13 @@ def crear_matriz_haversine(coordenadas, factor_desvio=1.3, velocidad_kmh=20.0):
     return distancias, tiempos
 
 
-def obtener_matrices(coordenadas):
+def obtener_matrices(coordenadas, velocidad_kmh=20.0):
     """Usa Mapbox si hay llave y caben los puntos; si no, la alternativa haversine."""
     if os.getenv("MAPBOX_API_KEY") and len(coordenadas) <= 25:
         distancias, tiempos = crear_matriz_de_distancias_y_tiempos(coordenadas)
         if distancias and tiempos:
             return distancias, tiempos, "mapbox"
-    distancias, tiempos = crear_matriz_haversine(coordenadas)
+    distancias, tiempos = crear_matriz_haversine(coordenadas, velocidad_kmh=velocidad_kmh)
     return distancias, tiempos, "haversine"
 
 

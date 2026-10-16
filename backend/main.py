@@ -6,7 +6,7 @@ import base64
 import logging
 import random
 from typing import List, Optional, Tuple, Union
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import matplotlib
 matplotlib.use('Agg')
@@ -31,6 +31,7 @@ def cargar_dotenv_simple(ruta='.env'):
 cargar_dotenv_simple()
 # Módulos locales
 from alg_nsga2 import preparar_datos_para_algoritmo, alg_NSGA2, obtener_matrices, simular_ruta
+from parametros_cu import impacto_escenarios, tabla_parametros
 
 # Configurar logging estructurado para Google Cloud
 logging.basicConfig(
@@ -63,7 +64,12 @@ class OptimizeRequest(BaseModel):
     # Camión eléctrico.
     vehicleAutonomy: Optional[float] = Field(default=None, description="Batería útil en kWh.")
     vehicleConsumption: Optional[float] = Field(default=None, description="Consumo en kWh/km.")
-    chargingPowerKw: float = Field(default=60.0, description="Potencia del cargador en kW.")
+    chargingPowerKw: float = Field(default=150.0, description="Potencia del cargador en kW.")
+    solarFraction: float = Field(default=1.0, ge=0.0, le=1.0,
+                                 description="Fracción de la energía cargada con paneles solares (0 a 1).")
+    chargingPeriod: str = Field(default="noche", description="'noche' (tarifa base) o 'dia'.")
+    speedKmh: float = Field(default=20.0, gt=0, description="Velocidad promedio para estimar tiempos (km/h).")
+    batteryReserve: float = Field(default=0.10, ge=0.0, lt=1.0, description="Fracción mínima de batería.")
 
 # --- Configuración de la App ---
 
@@ -143,8 +149,70 @@ def detailed_health():
         ]
     }
 
+@app.get("/parametros")
+def parametros():
+    """Parámetros del cálculo de impacto, con su fuente y nivel de confianza."""
+    return {"parametros": tabla_parametros()}
+
+
+# --- Escenario real de Ciudad Universitaria ---
+
+def _fecha(texto):
+    try:
+        return date.fromisoformat(texto)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Fecha inválida; usa AAAA-MM-DD.")
+
+
+@app.get("/cu/escenario")
+def cu_escenario():
+    """Rutas actuales del Pumabús, paraderos con su peso de demanda y precisión del modelo."""
+    import escenario_cu, demanda_cu
+    try:
+        rutas = escenario_cu.rutas_actuales()
+        paraderos = escenario_cu.paraderos()
+        modelo = demanda_cu.modelo()
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return {
+        "rutas": rutas,
+        "paraderos": paraderos,
+        "bases": ["Metro Universidad", "Estadio Olímpico", "Metrobús CU"],
+        "modelo": modelo.metricas,
+        "datos_hasta": modelo.hasta.isoformat(),
+        "horas_sol_pico": demanda_cu.horas_sol_pico(),
+    }
+
+
+@app.get("/cu/dia")
+def cu_dia(fecha: str, kwp_solar: float = 0.0):
+    """Operación de todo el día: actual vs. GenRutas, con energía y carga solar."""
+    import operacion_cu
+    return operacion_cu.plan_dia(_fecha(fecha), kwp_solar=kwp_solar)
+
+
+@app.get("/cu/disenar")
+def cu_disenar(fecha: str, hora: int, base: str = "Metro Universidad", oleada_min: int = 10,
+               fraccion_solar: float = 1.0):
+    """Rutas nuevas con el NSGA-II para una base y hora, comparadas con las rutas actuales."""
+    import optimizacion_cu
+    if not 6 <= hora <= 21:
+        raise HTTPException(status_code=400, detail="El Pumabús opera de 6 a 22 h.")
+    if oleada_min not in (5, 10, 15, 20, 30):
+        raise HTTPException(status_code=400, detail="La oleada debe ser de 5, 10, 15, 20 o 30 minutos.")
+    try:
+        return optimizacion_cu.disenar(_fecha(fecha), hora, base, oleada_min, fraccion_solar)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.post("/optimize")
-async def optimize_route(request_data: OptimizeRequest):
+def optimize_route(request_data: OptimizeRequest):
+    return optimizar(request_data)
+
+
+def optimizar(request_data: OptimizeRequest):
+    """Corre el NSGA-II y arma la respuesta (frente de Pareto, itinerarios, impacto y gráficas)."""
     logger.info(
         "Optimization request received: %s nodos, %s vehículos, capacidad %s",
         len(request_data.nodes), request_data.numVehicles, request_data.vehicleCapacity,
@@ -183,7 +251,8 @@ async def optimize_route(request_data: OptimizeRequest):
 
         # 4. Matrices de distancia y tiempo (contenedores y estaciones de carga)
         coordenadas_estaciones = [[(n.lat, n.lng), 0] for n in estaciones]
-        matriz_distancias, matriz_tiempos, fuente_matriz = obtener_matrices(coordenadas + coordenadas_estaciones)
+        matriz_distancias, matriz_tiempos, fuente_matriz = obtener_matrices(
+            coordenadas + coordenadas_estaciones, velocidad_kmh=request_data.speedKmh)
         logger.info("Matrices de distancia: %s", fuente_matriz)
 
         fin_dt = datetime.strptime(time_window_formateado[1], '%H:%M:%S')
@@ -191,6 +260,8 @@ async def optimize_route(request_data: OptimizeRequest):
             "autonomia_kwh": request_data.vehicleAutonomy,
             "consumo_kwh_km": request_data.vehicleConsumption or 1.2,
             "potencia_carga_kw": request_data.chargingPowerKw,
+            "reserva": request_data.batteryReserve,
+            "velocidad_kmh": request_data.speedKmh,
             "servicio_s": tiempo_servicio_min * 60,
             "inicio_s": hora_inicio_dt.hour * 3600 + hora_inicio_dt.minute * 60,
             "fin_s": fin_dt.hour * 3600 + fin_dt.minute * 60,
@@ -212,8 +283,6 @@ async def optimize_route(request_data: OptimizeRequest):
         progreso_base64 = generar_grafica_base64(fig1)
 
         # 6. Procesamiento de resultados
-        METERS_TO_MILES = 0.000621371
-        DIESEL_KG_CO2E_PER_GALLON = 10.22
         soluciones = []
 
         for individuo in poblacion_final:
@@ -254,12 +323,6 @@ async def optimize_route(request_data: OptimizeRequest):
                     "carga": r["carga"],
                 })
 
-            # Impacto diésel (compatibilidad); el frontend calcula el eléctrico.
-            kg_co2e_diesel = None
-            if request_data.vehicleMPG:
-                galones = distancia_total * METERS_TO_MILES / request_data.vehicleMPG
-                kg_co2e_diesel = round(galones * DIESEL_KG_CO2E_PER_GALLON, 2)
-
             soluciones.append({
                 "distancia": round(distancia_total, 1),
                 "tiempo": round(tiempo_max, 1),
@@ -267,7 +330,8 @@ async def optimize_route(request_data: OptimizeRequest):
                 "carga_total": sum(r["carga"] for r in rutas_formateadas),
                 "factible": factible,
                 "routes": rutas_formateadas,
-                "environmentalImpact": {"total_kg_co2e": kg_co2e_diesel},
+                "impacto": impacto_escenarios(distancia_total / 1000, energia_total,
+                                              request_data.solarFraction, request_data.chargingPeriod),
             })
 
         factibles = [s for s in soluciones if s["factible"]]
@@ -300,6 +364,7 @@ async def optimize_route(request_data: OptimizeRequest):
             "aviso": aviso,
             "paretoFront": frente,
             "coordenadas_nodos": {str(n.id): (n.lat, n.lng) for n in todos_nodos},
+            "parametros": tabla_parametros(),
             "graficas": {
                 "progreso_optimizacion": progreso_base64,
                 "soluciones_finales": pareto_base64,
