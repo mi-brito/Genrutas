@@ -150,7 +150,7 @@ const obtener = async <T,>(ruta: string, parametros: Record<string, string | num
 };
 
 export const cargarEscenarioCU = () => obtener<EscenarioCU>('/cu/escenario');
-export const planDia = (fecha: string, kwpSolar: number) => obtener<PlanDia>('/cu/dia', { fecha, kwp_solar: kwpSolar });
-export const disenarRutas = (fecha: string, hora: number, base: string, oleadaMin: number, fraccionSolar: number) =>
-  obtener<DisenoCU>('/cu/disenar', { fecha, hora, base, oleada_min: oleadaMin, fraccion_solar: fraccionSolar });
+export const planDia = (fecha: string, kwpSolar: number, flota = 60) => obtener<PlanDia>('/cu/dia', { fecha, kwp_solar: kwpSolar, flota });
+export const disenarRutas = (fecha: string, hora: number, base: string, oleadaMin: number, fraccionSolar: number, maxParadas = 12) =>
+  obtener<DisenoCU>('/cu/disenar', { fecha, hora, base, oleada_min: oleadaMin, fraccion_solar: fraccionSolar, max_paradas: maxParadas });
 export const cargarParametros = async () => (await obtener<{ parametros: Parametro[] }>('/parametros')).parametros;

@@ -124,5 +124,7 @@ export interface CapaMapaCU {
   rutasActuales: LineaMapa[];
   rutasNuevas: LineaMapa[];
   paraderos: { lat: number; lng: number; nombre: string; valor: number; etiqueta: string }[];
+  // Todos los paraderos actuales del Pumabús (OpenStreetMap), dibujados como señal de parada.
+  todasParadas?: { lat: number; lng: number; nombre: string; rutas: string }[];
   base?: { lat: number; lng: number; nombre: string };
 }

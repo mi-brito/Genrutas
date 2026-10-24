@@ -75,10 +75,10 @@ def radiacion_por_mes_hora():
     return {k: sumas[k] / conteos[k] for k in sumas}
 
 
-def plan_dia(fecha: date, kwp_solar: float = 0.0, consumo_kwh_km: float = None):
+def plan_dia(fecha: date, kwp_solar: float = 0.0, consumo_kwh_km: float = None, flota: int = None):
     consumo = consumo_kwh_km or valor("consumo_ev_kwh_km")
     capacidad = valor("capacidad_pasajeros")
-    flota = valor("flota_unidades")
+    flota = flota or valor("flota_unidades")  # por defecto, la flota real del Pumabús (60)
     duracion_recorrido_h = KM_POR_RECORRIDO / valor("velocidad_kmh") + DESCANSO_MIN / 60
 
     modelo = demanda_cu.modelo()

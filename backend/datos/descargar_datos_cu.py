@@ -21,6 +21,7 @@ import csv
 import io
 import json
 import os
+import ssl
 import sys
 import time
 import urllib.parse
@@ -28,6 +29,13 @@ import urllib.request
 from datetime import date, datetime
 
 CARPETA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cu")
+# El Python de python.org en Mac no trae certificados raíz; certifi (ya instalado con httpx) sí.
+try:
+    import certifi
+    CONTEXTO_SSL = ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    CONTEXTO_SSL = ssl.create_default_context()
+
 AGENTE = "GenRutas/1.0 (proyecto estudiantil UNAM; descarga única de datos abiertos)"
 
 # Rectángulo que cubre CU con margen: sur, oeste, norte, este
@@ -44,7 +52,7 @@ def descargar(url, datos=None, intentos=3, espera=5, timeout=180):
     for intento in range(1, intentos + 1):
         try:
             peticion = urllib.request.Request(url, data=datos, headers={"User-Agent": AGENTE})
-            with urllib.request.urlopen(peticion, timeout=timeout) as respuesta:
+            with urllib.request.urlopen(peticion, timeout=timeout, context=CONTEXTO_SSL) as respuesta:
                 return respuesta.read()
         except Exception as error:  # noqa: BLE001
             ultimo_error = error
@@ -162,7 +170,7 @@ def descargar_metro():
         del_archivo = {}
         try:
             peticion = urllib.request.Request(url, headers={"User-Agent": AGENTE})
-            with urllib.request.urlopen(peticion, timeout=600) as respuesta:
+            with urllib.request.urlopen(peticion, timeout=600, context=CONTEXTO_SSL) as respuesta:
                 # Se lee línea por línea para no cargar el archivo completo en memoria.
                 lector = csv.DictReader(io.TextIOWrapper(respuesta, encoding="utf-8-sig", errors="replace"))
                 columnas = {_normaliza(c): c for c in (lector.fieldnames or [])}

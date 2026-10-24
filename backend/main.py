@@ -185,15 +185,17 @@ def cu_escenario():
 
 
 @app.get("/cu/dia")
-def cu_dia(fecha: str, kwp_solar: float = 0.0):
+def cu_dia(fecha: str, kwp_solar: float = 0.0, flota: int = 0):
     """Operación de todo el día: actual vs. GenRutas, con energía y carga solar."""
     import operacion_cu
-    return operacion_cu.plan_dia(_fecha(fecha), kwp_solar=kwp_solar)
+    if flota < 0 or flota > 500:
+        raise HTTPException(status_code=400, detail="La flota debe estar entre 1 y 500 autobuses.")
+    return operacion_cu.plan_dia(_fecha(fecha), kwp_solar=kwp_solar, flota=flota or None)
 
 
 @app.get("/cu/disenar")
 def cu_disenar(fecha: str, hora: int, base: str = "Metro Universidad", oleada_min: int = 10,
-               fraccion_solar: float = 1.0):
+               fraccion_solar: float = 1.0, max_paradas: int = 12):
     """Rutas nuevas con el NSGA-II para una base y hora, comparadas con las rutas actuales."""
     import optimizacion_cu
     if not 6 <= hora <= 21:
@@ -201,7 +203,9 @@ def cu_disenar(fecha: str, hora: int, base: str = "Metro Universidad", oleada_mi
     if oleada_min not in (5, 10, 15, 20, 30):
         raise HTTPException(status_code=400, detail="La oleada debe ser de 5, 10, 15, 20 o 30 minutos.")
     try:
-        return optimizacion_cu.disenar(_fecha(fecha), hora, base, oleada_min, fraccion_solar)
+        # max_paradas = 0: todos los paraderos actuales de las rutas de la base
+        return optimizacion_cu.disenar(_fecha(fecha), hora, base, oleada_min, fraccion_solar,
+                                       max_paradas=max_paradas if max_paradas > 0 else 1000)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

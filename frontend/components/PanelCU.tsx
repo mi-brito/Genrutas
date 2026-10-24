@@ -35,8 +35,10 @@ const PanelCU: React.FC<PanelCUProps> = ({ onCapa }) => {
   const [hora, setHora] = useState(15);
   const [base, setBase] = useState('Metro Universidad');
   const [oleada, setOleada] = useState(10);
+  const [maxParadas, setMaxParadas] = useState(12);
   const [solarPct, setSolarPct] = useState(100);
   const [kwp, setKwp] = useState(500);
+  const [flota, setFlota] = useState(60); // flota real del Pumabús (Memoria UNAM 2024)
   const [cargando, setCargando] = useState<string | null>(null);
   const [plan, setPlan] = useState<PlanDia | null>(null);
   const [diseno, setDiseno] = useState<DisenoCU | null>(null);
@@ -49,6 +51,7 @@ const PanelCU: React.FC<PanelCUProps> = ({ onCapa }) => {
         onCapa({
           rutasActuales: lineasActuales(e),
           rutasNuevas: [],
+          todasParadas: senalesParada(e),
           paraderos: e.paraderos.filter(p => !p.base).map(p => ({
             lat: p.lat, lng: p.lng, nombre: p.nombre, valor: p.peso,
             etiqueta: `Rutas ${p.rutas.join(', ')}<br>Peso por matrícula cercana: ${n(p.peso)}`,
@@ -64,7 +67,7 @@ const PanelCU: React.FC<PanelCUProps> = ({ onCapa }) => {
     setCargando('Pronosticando el día...');
     setError(null);
     try {
-      setPlan(await planDia(fecha, kwp));
+      setPlan(await planDia(fecha, kwp, flota));
       setPestana('dia');
     } catch (e) {
       setError((e as Error).message);
@@ -75,10 +78,10 @@ const PanelCU: React.FC<PanelCUProps> = ({ onCapa }) => {
 
   const disenar = async () => {
     if (!escenario) return;
-    setCargando('El NSGA-II está diseñando las rutas (30 a 60 s)...');
+    setCargando(maxParadas === 0 ? 'El NSGA-II está diseñando con todos los paraderos (puede tardar unos minutos)...' : 'El NSGA-II está diseñando las rutas (30 a 60 s)...');
     setError(null);
     try {
-      const d = await disenarRutas(fecha, hora, base, oleada, solarPct / 100);
+      const d = await disenarRutas(fecha, hora, base, oleada, solarPct / 100, maxParadas);
       setDiseno(d);
       setPestana('rutas');
       // Trazo por calle de las rutas nuevas (OSRM); si falla, líneas rectas.
@@ -97,6 +100,7 @@ const PanelCU: React.FC<PanelCUProps> = ({ onCapa }) => {
       onCapa({
         rutasActuales: lineasActuales(escenario, d.actual.rutas.map(r => r.ruta)),
         rutasNuevas: [...nuevas, ...directos],
+        todasParadas: senalesParada(escenario),
         paraderos: d.paradas.map(p => ({
           lat: p.lat, lng: p.lng, nombre: p.nombre, valor: p.pasajeros_oleada,
           etiqueta: `${p.pasajeros_oleada} pasajeros por salida${p.directos ? ` (${p.directos} directo)` : ''}`,
@@ -147,6 +151,19 @@ const PanelCU: React.FC<PanelCUProps> = ({ onCapa }) => {
         <div>
           <label className={etiqueta}>Energía solar: {solarPct}%</label>
           <input type="range" min={0} max={100} step={10} value={solarPct} onChange={e => setSolarPct(Number(e.target.value))} className="w-full" />
+        </div>
+        <div>
+          <label className={etiqueta}>Paraderos actuales a usar</label>
+          <select className={campo} value={maxParadas} onChange={e => setMaxParadas(Number(e.target.value))}>
+            <option value={12}>12 con más demanda (rápido)</option>
+            <option value={24}>24 con más demanda</option>
+            <option value={0}>Todos los de la base</option>
+          </select>
+        </div>
+        <div>
+          <label className={etiqueta}>Autobuses en la flota</label>
+          <input type="number" min={1} max={500} step={1} className={campo} value={flota} onChange={e => setFlota(Math.max(1, Number(e.target.value) || 60))} />
+          <p className="text-[11px] text-gray-500 mt-0.5">Pumabús hoy: 60 (Memoria UNAM 2024). Afecta el plan del día.</p>
         </div>
         <div><label className={etiqueta}>Paneles en bases (kWp)</label><input type="number" min={0} step={100} className={campo} value={kwp} onChange={e => setKwp(Number(e.target.value))} /></div>
       </div>
@@ -333,6 +350,12 @@ const ResultadoDia: React.FC<{ p: PlanDia }> = ({ p }) => {
   );
 };
 
+// Todos los paraderos actuales (incluidos los de las bases) como señal de parada en el mapa.
+const senalesParada = (e: EscenarioCU) => e.paraderos.map(p => ({
+  lat: p.lat, lng: p.lng, nombre: p.nombre,
+  rutas: p.rutas.length ? `Rutas ${p.rutas.join(', ')}` : (p.base ? `Base ${p.base}` : ''),
+}));
+
 // --- Modelo y fuentes ---
 const Modelo: React.FC<{ e: EscenarioCU; plan: PlanDia | null; diseno: DisenoCU | null }> = ({ e, diseno }) => {
   const m = e.modelo;
@@ -359,6 +382,14 @@ const Modelo: React.FC<{ e: EscenarioCU; plan: PlanDia | null; diseno: DisenoCU 
         {e.horas_sol_pico && <p><b>Sol en CU:</b> {n(e.horas_sol_pico, 1)} horas solares pico al día (radiación horaria Open-Meteo/ERA5, último año).</p>}
         {diseno?.motor && <p><b>Motor:</b> matriz {diseno.motor.fuenteMatriz}, {diseno.motor.soluciones_frente} soluciones en el frente de Pareto.</p>}
       </div>
+      {diseno?.motor?.graficas?.progreso_optimizacion && (
+        <div className="space-y-2">
+          <h3 className="font-semibold text-text-main">Algoritmo genético (NSGA-II)</h3>
+          <p className="text-xs text-text-light">Convergencia en 100 generaciones y frente de Pareto de la última corrida de "Diseñar rutas".</p>
+          <img src={diseno.motor.graficas.progreso_optimizacion} alt="Convergencia del NSGA-II" className="w-full rounded border" />
+          {diseno.motor.graficas.soluciones_finales && <img src={diseno.motor.graficas.soluciones_finales} alt="Frente de Pareto" className="w-full rounded border" />}
+        </div>
+      )}
       <p className="text-xs text-gray-500">Datos de OpenStreetMap © colaboradores de OpenStreetMap (ODbL).</p>
     </div>
   );

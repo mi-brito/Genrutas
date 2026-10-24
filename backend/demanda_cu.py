@@ -18,6 +18,7 @@ Cuando la DGSGM comparta conteos reales del Pumabús, basta con cambiar el objet
 import csv
 import math
 import os
+import threading
 from datetime import date, datetime, timedelta
 from functools import lru_cache
 
@@ -229,13 +230,18 @@ class ModeloDemanda:
 
 
 _MODELO = None
+_CANDADO = threading.Lock()
 
 
 def modelo():
+    """Entrena una sola vez. El candado evita que dos peticiones simultáneas (el frontend
+    pide el escenario dos veces al arrancar) usen un modelo a medio entrenar."""
     global _MODELO
-    if _MODELO is None:
-        _MODELO = ModeloDemanda()
-        _MODELO.entrenar()
+    with _CANDADO:
+        if _MODELO is None:
+            nuevo = ModeloDemanda()
+            nuevo.entrenar()
+            _MODELO = nuevo
     return _MODELO
 
 

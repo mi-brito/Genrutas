@@ -966,7 +966,7 @@ def alg_NSGA2(num_nodos, num_camiones, coordenadas, horario, capacidad, matriz_d
         evaluar_poblacion(poblacion, int(capacidad))        
         # Aplica ordenamiento no determinado a la poblacion
         orden_indices = ordenamiento_no_determinado(poblacion)                  
-        copia_poblacion = poblacion
+        copia_poblacion = list(poblacion)  # copia real: antes era un alias y duplicaba individuos
         ind = 0
         # Ordena la poblacion de acuerdo a la lista de indices que se obtuvo
         for rango in orden_indices:
@@ -976,27 +976,25 @@ def alg_NSGA2(num_nodos, num_camiones, coordenadas, horario, capacidad, matriz_d
         # Aplica ordenamiento por distancia de aglomeracion a la poblacion
         poblacion = ordenamiento_por_distancia_de_aglomeracion(poblacion, orden_indices, capacidad)    
         # Se eliminan los ultimos elementos de la poblacion
-        copia_poblacion = poblacion.copy()
-        ind = 0
-        while ind < tamanio_poblacion:
-            if ind >= tamanio_poblacion/2:
-                poblacion.remove(copia_poblacion[ind])            
-            ind += 1
+        # Sobrevive la mejor mitad (por rango y crowding distance). Antes se usaba remove(),
+        # que con individuos repetidos borraba copias de los mejores en lugar de los peores.
+        poblacion = poblacion[:tamanio_poblacion // 2]
         
         mejores_de_rangos = []
         peores_de_rangos = []
         inicio = 0
         # Se obtiene el mejor y el peor de cada rango
         for rango in orden_indices:
-            mejor = obtiene_mejor_individuo_del_rango(poblacion[inicio:inicio+len(rango)-1])            
-            mejores_de_rangos.append(mejor)
-            peor = obtiene_peor_individuo_del_rango(poblacion[inicio:inicio+len(rango)-1])            
-            peores_de_rangos.append(peor)
-            inicio = len(rango)-1          
+            tramo = poblacion[inicio:inicio + len(rango)]
+            inicio += len(rango)
+            if not tramo:
+                break
+            mejores_de_rangos.append(obtiene_mejor_individuo_del_rango(tramo))
+            peores_de_rangos.append(obtiene_peor_individuo_del_rango(tramo))
 
         # Se busca el mejor de la generacion
         for individuo in mejores_de_rangos:
-            if gen == 1:
+            if gen == 0 and mejor_solucion.evaluacion == 0:
                 mejor_solucion = individuo               
             if mejor_solucion_actual.evaluacion == 0:
                 mejor_solucion_actual = individuo                 
@@ -1011,7 +1009,7 @@ def alg_NSGA2(num_nodos, num_camiones, coordenadas, horario, capacidad, matriz_d
 
         # Se busca el peor de la generacion
         for individuo in peores_de_rangos:
-            if gen == 1:
+            if gen == 0 and peor_solucion.evaluacion == 0:
                 peor_solucion = individuo               
             if peor_solucion_actual.evaluacion == 0:
                 peor_solucion_actual = individuo        
