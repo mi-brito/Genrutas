@@ -1,62 +1,61 @@
 # test_local.py
+# Prueba el endpoint /optimize sin levantar el servidor, con puntos reales en CU (CDMX).
+# Sin MAPBOX_API_KEY usa la matriz haversine.
 
-# Importamos las funciones principales de tu algoritmo
-from alg_nsga2 import preparar_datos_para_algoritmo, alg_NSGA2
-import json # Usaremos json para imprimir el resultado de forma legible
+import json
+import sys
+import time
 
-def ejecutar_prueba_local():
-    """
-    Esta función simula una petición de Postman, pero de forma local.
-    """
-    print("--- INICIANDO PRUEBA LOCAL DEL ALGORITMO ---")
+from fastapi.testclient import TestClient
 
-    # 1. Prepara los datos de prueba (el mismo JSON que usamos en Postman)
-    datos_de_prueba = {
-      "nodes": [
-        {"id": "1", "lat": 82, "lng": 76, "demanda": 0},
-        {"id": "2", "lat": 96, "lng": 44, "demanda": 19},
-        {"id": "3", "lat": 50, "lng": 5, "demanda": 21},
-        {"id": "4", "lat": 49, "lng": 8, "demanda": 6},
-        {"id": "5", "lat": 13, "lng": 7, "demanda": 19},
-        {"id": "6", "lat": 29, "lng": 89, "demanda": 7},
-        {"id": "7", "lat": 58, "lng": 30, "demanda": 12},
-        {"id": "8", "lat": 84, "lng": 39, "demanda": 16},
-        {"id": "9", "lat": 14, "lng": 24, "demanda": 6},
-        {"id": "10", "lat": 2, "lng": 39, "demanda": 16}
-      ],
-      "vehicleCapacity": 100,
-      "timeWindow": ["08:00:00", "18:00:00"]
-    }
-    print("Datos de entrada listos.")
+from main import app
 
-    try:
-        # 2. Llama a tus funciones existentes para preparar y ejecutar el algoritmo
-        print("Preparando datos para el algoritmo...")
-        numN, numC, capacidad, coordenadas, horario = preparar_datos_para_algoritmo(
-            datos_de_prueba['nodes'],
-            datos_de_prueba['vehicleCapacity'],
-            datos_de_prueba['timeWindow']
-        )
-
-        print("Ejecutando alg_NSGA2... Esto puede tardar.")
-        resultado = alg_NSGA2(numN, numC, coordenadas, horario, capacidad)
-        mejor_solucion = resultado[0] if isinstance(resultado, tuple) else resultado
-        print("--- ALGORITMO FINALIZADO CON ÉXITO ---")
-
-        # 3. Muestra el resultado en la terminal
-        print("\n--- MEJOR SOLUCIÓN ENCONTRADA ---")
-        # Imprimimos la solución de una forma más bonita usando json.dumps
-        # (Necesitamos un truco para que no falle con objetos complejos)
-        print(json.dumps(mejor_solucion._asdict(), indent=4, default=str))
-
-    except Exception as e:
-        print(f"\n--- OCURRIÓ UN ERROR DURANTE LA EJECUCIÓN ---")
-        print(f"Error: {e}")
-        # Esto te dará más detalles sobre en qué línea falló
-        import traceback
-        traceback.print_exc()
+DATOS = {
+    "nodes": [
+        {"id": 1, "lat": 19.3326, "lng": -99.1870, "demand": 0, "type": "depot"},
+        {"id": 2, "lat": 19.3240, "lng": -99.1790, "demand": 8, "type": "container"},
+        {"id": 3, "lat": 19.3290, "lng": -99.1760, "demand": 6, "type": "container"},
+        {"id": 4, "lat": 19.3180, "lng": -99.1850, "demand": 10, "type": "container"},
+        {"id": 5, "lat": 19.3215, "lng": -99.1905, "demand": 7, "type": "container"},
+        {"id": 6, "lat": 19.3350, "lng": -99.1795, "demand": 9, "type": "container"},
+        {"id": 7, "lat": 19.3275, "lng": -99.1930, "demand": 5, "type": "container"},
+        {"id": 8, "lat": 19.3160, "lng": -99.1780, "demand": 6, "type": "container"},
+        {"id": 9, "lat": 19.3305, "lng": -99.1700, "demand": 4, "type": "container"},
+        {"id": 10, "lat": 19.3260, "lng": -99.1820, "demand": 0, "type": "charging_station"},
+    ],
+    "vehicleCapacity": 30,
+    "timeWindow": ["06:00", "10:00"],
+    "numberOfVehicles": 3,
+    "startTime": "06:30",
+    "serviceTime": 5,
+    "vehicleAutonomy": 80,
+    "vehicleConsumption": 0.5,
+}
 
 
-# --- Esta es la parte que ejecuta la función de prueba ---
+def ejecutar_prueba_local(autonomia=80, consumo=1.2):
+    DATOS["vehicleAutonomy"] = autonomia
+    DATOS["vehicleConsumption"] = consumo
+    print(f"--- Batería {autonomia} kWh, consumo {consumo} kWh/km ---")
+    cliente = TestClient(app)
+    inicio = time.perf_counter()
+    respuesta = cliente.post("/optimize", json=DATOS)
+    duracion = time.perf_counter() - inicio
+    print(f"Estado HTTP: {respuesta.status_code} ({duracion:.1f} s)")
+    cuerpo = respuesta.json()
+    if respuesta.status_code != 200:
+        print(json.dumps(cuerpo, indent=2, ensure_ascii=False))
+        return
+    print(f"Matriz: {cuerpo['fuenteMatriz']} | Aviso: {cuerpo['aviso']}")
+    print(f"Soluciones en el frente: {len(cuerpo['paretoFront'])}")
+    for s in cuerpo["paretoFront"]:
+        rutas = "; ".join(
+            f"unidad {r['camionId']}: {r['nodos']} ({r['carga']} pax, {r['energia_kwh']} kWh, {r['recargas']} recargas)"
+            for r in s["routes"])
+        print(f"  {s['label']}: {s['distancia'] / 1000:.2f} km, {s['tiempo'] / 60:.0f} min, {s['energia_kwh']} kWh -> {rutas}")
+
+
 if __name__ == "__main__":
-    ejecutar_prueba_local()
+    autonomia = float(sys.argv[1]) if len(sys.argv) > 1 else 80
+    consumo = float(sys.argv[2]) if len(sys.argv) > 2 else 1.2
+    ejecutar_prueba_local(autonomia, consumo)

@@ -1,0 +1,28 @@
+{
+  "descargado": "2026-10-16T14:01:40",
+  "osm": {
+    "archivo": "osm_cu.json",
+    "servidor": "https://overpass.private.coffee/api/interpreter",
+    "elementos": 392,
+    "rutas_bus": 15,
+    "rutas_pumabus": 13,
+    "paradas": 203,
+    "licencia": "© OpenStreetMap contributors, ODbL"
+  },
+  "metro": {
+    "archivo": "metro_universidad_diario.csv",
+    "urls": [
+      "https://datos.cdmx.gob.mx/dataset/f2046fd5-51b5-4876-b008-bd65d95f9a02/resource/0e8ffe58-28bb-4dde-afcd-e5f5b4de4ccb/download/0e8ffe58-28bb-4dde-afcd-e5f5b4de4ccb.csv"
+    ],
+    "filas": 12112,
+    "desde": "2010-01-01",
+    "hasta": "2026-07-31",
+    "fuente": "STC Metro, Portal de Datos Abiertos de la CDMX"
+  },
+  "clima": {
+    "archivo": "clima_cu_horario.csv",
+    "url": "https://archive-api.open-meteo.com/v1/archive?latitude=19.324&longitude=-99.184&start_date=2021-01-01&end_date=2026-10-09&hourly=temperature_2m%2Cprecipitation%2Cshortwave_radiation&timezone=America%2FMexico_City",
+    "horas": 50592,
+    "fuente": "Open-Meteo Historical Weather API (ERA5), CC BY 4.0"
+  }
+}

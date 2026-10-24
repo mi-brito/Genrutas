@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { Node, Route } from '../types';
+import { CapaMapaCU, Node, Route } from '../types';
 import { PowerIcon } from './icons';
 import ReactDOMServer from 'react-dom/server';
 
@@ -15,12 +15,24 @@ interface InteractiveMapProps {
   routes: Route[];
   onAddNode?: (lat: number, lng: number) => void;
   highlightedRouteId?: number | null;
+  capaCU?: CapaMapaCU | null;
 }
 
-const InteractiveMap: React.FC<InteractiveMapProps> = ({ nodes, routes, onAddNode, highlightedRouteId }) => {
+const InteractiveMap: React.FC<InteractiveMapProps> = ({ nodes, routes, onAddNode, highlightedRouteId, capaCU }) => {
   const mapRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
   const routesRef = useRef<any[]>([]);
+  const capaCURef = useRef<any[]>([]);
+  // Último encuadre útil (rutas, paraderos, base). El botón "Centrar" vuelve a él.
+  const encuadreRef = useRef<any>(null);
+
+  const encuadrar = (puntos: any[], padding = 40) => {
+    const L = window.L;
+    if (!mapRef.current || !L || puntos.length === 0) return;
+    const bounds = L.latLngBounds(puntos);
+    encuadreRef.current = { bounds, padding };
+    mapRef.current.fitBounds(bounds, { padding: [padding, padding] });
+  };
 
   useEffect(() => {
     if (!mapRef.current) {
@@ -29,6 +41,30 @@ const InteractiveMap: React.FC<InteractiveMapProps> = ({ nodes, routes, onAddNod
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
       }).addTo(mapRef.current);
+
+      // Botón para recentrar el mapa en las rutas y paraderos.
+      const Centrar = L.Control.extend({
+        options: { position: 'topleft' },
+        onAdd: () => {
+          const boton = L.DomUtil.create('a', 'leaflet-bar');
+          boton.href = '#';
+          boton.title = 'Centrar mapa en las rutas';
+          boton.setAttribute('role', 'button');
+          boton.setAttribute('aria-label', 'Centrar mapa en las rutas');
+          boton.innerHTML = '⌖';
+          boton.style.cssText = 'display:flex;align-items:center;justify-content:center;width:34px;height:34px;background:white;color:#1F2937;font-size:22px;line-height:1;text-decoration:none;cursor:pointer;';
+          L.DomEvent.disableClickPropagation(boton);
+          L.DomEvent.on(boton, 'click', (e: any) => {
+            L.DomEvent.preventDefault(e);
+            mapRef.current.invalidateSize(); // repara mosaicos grises si el panel cambió de tamaño
+            const enc = encuadreRef.current;
+            if (enc) mapRef.current.fitBounds(enc.bounds, { padding: [enc.padding, enc.padding] });
+            else mapRef.current.setView([19.3248, -99.1792], 14);
+          });
+          return boton;
+        },
+      });
+      new Centrar().addTo(mapRef.current);
     }
   }, []);
 
@@ -162,8 +198,7 @@ const InteractiveMap: React.FC<InteractiveMapProps> = ({ nodes, routes, onAddNod
     }
     
      if (nodes.length > 0 && routes.length === 0) {
-        const bounds = L.latLngBounds(nodes.map(n => [n.lat, n.lng]));
-        mapRef.current.fitBounds(bounds, { padding: [50, 50] });
+        encuadrar(nodes.map(n => [n.lat, n.lng]), 50);
     }
 
   }, [nodes, routes]);
@@ -208,13 +243,84 @@ const InteractiveMap: React.FC<InteractiveMapProps> = ({ nodes, routes, onAddNod
     });
 
     if (routesRef.current.length > 0) {
-        const allPoints = nodes.map(n => L.latLng(n.lat, n.lng));
-        const bounds = L.latLngBounds(allPoints);
-        mapRef.current.fitBounds(bounds, { padding: [50, 50] });
+        encuadrar(nodes.map(n => L.latLng(n.lat, n.lng)), 50);
     }
     
   }, [routes, nodes, highlightedRouteId]);
 
+
+  // Escenario real de CU: rutas actuales (punteadas), rutas nuevas (con flechas) y paraderos.
+  useEffect(() => {
+    const L = window.L;
+    if (!mapRef.current || !L) return;
+    capaCURef.current.forEach(layer => layer.remove());
+    capaCURef.current = [];
+    if (!capaCU) return;
+    const mapa = mapRef.current;
+    const puntos: [number, number][] = [];
+    // Lo que importa ver: rutas nuevas, paraderos y base (sin las rutas actuales punteadas, que alejan el mapa).
+    const foco: [number, number][] = [];
+
+    capaCU.rutasActuales.forEach(r => {
+      if (r.trazo.length < 2) return;
+      const linea = L.polyline(r.trazo, { color: r.color, weight: 3, opacity: 0.55, dashArray: '6 6' })
+        .addTo(mapa).bindPopup(r.etiqueta);
+      capaCURef.current.push(linea);
+      puntos.push(...r.trazo);
+    });
+
+    capaCU.rutasNuevas.forEach(r => {
+      if (r.trazo.length < 2) return;
+      const linea = L.polyline(r.trazo, { color: r.color, weight: 6, opacity: 0.9 }).addTo(mapa).bindPopup(r.etiqueta);
+      capaCURef.current.push(linea);
+      if (L.polylineDecorator) {
+        const flechas = L.polylineDecorator(linea, {
+          patterns: [{ offset: '10%', repeat: 90, symbol: L.Symbol.arrowHead({ pixelSize: 11, pathOptions: { fillOpacity: 0.9, weight: 0, color: r.color } }) }],
+        }).addTo(mapa);
+        capaCURef.current.push(flechas);
+      }
+      puntos.push(...r.trazo);
+      foco.push(...r.trazo);
+    });
+
+    // Señal de parada en cada paradero actual del Pumabús (como los marcadores del modo libre).
+    const iconoParada = L.divIcon({
+      className: '',
+      html: `<div style="width:18px;height:18px;border-radius:4px;background:#15803d;color:white;font:bold 11px/18px sans-serif;text-align:center;border:1.5px solid white;box-shadow:0 1px 3px rgba(0,0,0,.45)">P</div>`,
+      iconSize: [18, 18], iconAnchor: [9, 9],
+    });
+    (capaCU.todasParadas ?? []).forEach(p => {
+      const m = L.marker([p.lat, p.lng], { icon: iconoParada, zIndexOffset: -100 }).addTo(mapa)
+        .bindPopup(`<b>Paradero ${p.nombre}</b>${p.rutas ? `<br>${p.rutas}` : ''}`);
+      capaCURef.current.push(m);
+    });
+
+    const maximo = Math.max(1, ...capaCU.paraderos.map(p => p.valor));
+    capaCU.paraderos.forEach(p => {
+      const radio = 4 + 14 * Math.sqrt(p.valor / maximo);
+      const circulo = L.circleMarker([p.lat, p.lng], { radius: radio, color: '#0f766e', weight: 1.5, fillColor: '#14b8a6', fillOpacity: 0.55 })
+        .addTo(mapa).bindPopup(`<b>${p.nombre}</b><br>${p.etiqueta}`);
+      capaCURef.current.push(circulo);
+      puntos.push([p.lat, p.lng]);
+      foco.push([p.lat, p.lng]);
+    });
+
+    if (capaCU.base) {
+      const icono = L.divIcon({
+        className: '',
+        html: `<div style="background:#1F2937;color:white;width:30px;height:30px;display:flex;align-items:center;justify-content:center;font-weight:bold;border-radius:4px;border:2px solid white;box-shadow:0 0 5px rgba(0,0,0,.5)">⚡</div>`,
+        iconSize: [30, 30], iconAnchor: [15, 15],
+      });
+      const marcador = L.marker([capaCU.base.lat, capaCU.base.lng], { icon: icono }).addTo(mapa)
+        .bindPopup(`<b>Base ${capaCU.base.nombre}</b><br>Cargador de 150 kW`);
+      capaCURef.current.push(marcador);
+      puntos.push([capaCU.base.lat, capaCU.base.lng]);
+      foco.push([capaCU.base.lat, capaCU.base.lng]);
+    }
+
+    const destino = capaCU.rutasNuevas.length > 0 && foco.length > 1 ? foco : puntos;
+    if (destino.length > 1) encuadrar(destino, 30);
+  }, [capaCU]);
 
   return <div id="map" style={{ height: '100%', width: '100%' }}></div>;
 };

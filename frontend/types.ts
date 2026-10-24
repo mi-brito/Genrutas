@@ -30,29 +30,53 @@ export interface Route {
   pasajerosTransportados: number; // The total passengers transported by this vehicle
   ocupacionPromedio: string; // The average percentage of the vehicle's capacity that was used
   energia_ruta_kWh: number;
-  co2_ahorrado_kg: number;
+  recargas?: number;
   steps: RouteStep[]; // Detailed step-by-step itinerary for a single cycle
   dailySteps?: RouteStep[]; // Full-day expanded itinerary
 }
 
-export interface CalculationConstants {
-  consumo_ev_kwh_per_km: number;
-  consumo_fossil_l_per_km: number;
-  grid_emission_factor: number;
-  fuel_emission_factor: number;
-  precio_electricidad_mxn_per_kwh: number;
-  precio_combustible_mxn_per_l: number;
+// Impacto calculado por el backend (backend/parametros_cu.py) con parámetros citados.
+export interface EscenarioImpacto {
+  litros: number;
+  kwh: number;
+  kwh_solar?: number;
+  costo_energia_mxn: number;
+  costo_mant_mxn: number;
+  costo_total_mxn: number;
+  co2_kg: number;
+  nox_g: number;
+  pm25_g: number;
 }
 
+export interface Ahorro {
+  costo_mxn: number;
+  co2_kg: number;
+  co2_pct: number;
+}
 
-export interface EnvironmentalImpact {
-  energia_total_kWh: number;
-  costo_energia_mxn: number;
-  costo_combustible_mxn: number;
-  co2_electrico_kg: number;
-  co2_fosil_kg: number;
-  co2_ahorrado_kg: number;
-  constants: CalculationConstants;
+export interface Impacto {
+  km: number;
+  fraccion_solar: number;
+  carga: 'noche' | 'dia';
+  escenarios: {
+    diesel: EscenarioImpacto;
+    electrico_red: EscenarioImpacto;
+    electrico_solar: EscenarioImpacto;
+  };
+  ahorro_vs_diesel: {
+    electrico_red: Ahorro;
+    electrico_solar: Ahorro;
+  };
+}
+
+export interface Parametro {
+  clave: string;
+  valor: number | null;
+  unidad: string;
+  nivel: 'oficial' | 'academico' | 'proxy';
+  nota: string;
+  fuente: string;
+  url: string;
 }
 
 export interface DailySimulation {
@@ -60,7 +84,6 @@ export interface DailySimulation {
   layover_min: number;
   total_distancia_jornada_km: number;
   total_pasajeros_jornada: number;
-  environmentalImpact_jornada: EnvironmentalImpact;
 }
 
 export interface ParetoSolution {
@@ -70,7 +93,7 @@ export interface ParetoSolution {
   pasajeros_totales: number; // Per cycle
   tiempo: number; // Per cycle
   routes_serializadas: Route[];
-  environmentalImpact: EnvironmentalImpact; // Per cycle
+  impacto?: Impacto; // Solo cuando responde el motor
   dailySimulation?: DailySimulation;
 }
 
@@ -84,4 +107,24 @@ export interface OptimizationResult {
   paretoFront: ParetoSolution[];
   coordenadas_puntos: { [key: number]: [number, number] };
   graficas: Graficas;
+  parametros?: Parametro[];
+  // 'motor' = respuesta del NSGA-II; 'simulado' = respaldo sin backend.
+  fuente?: 'motor' | 'simulado';
+  aviso?: string | null;
+}
+// Capa del mapa para el escenario real de CU.
+export interface LineaMapa {
+  id: string;
+  color: string;
+  trazo: [number, number][];
+  etiqueta: string;
+}
+
+export interface CapaMapaCU {
+  rutasActuales: LineaMapa[];
+  rutasNuevas: LineaMapa[];
+  paraderos: { lat: number; lng: number; nombre: string; valor: number; etiqueta: string }[];
+  // Todos los paraderos actuales del Pumabús (OpenStreetMap), dibujados como señal de parada.
+  todasParadas?: { lat: number; lng: number; nombre: string; rutas: string }[];
+  base?: { lat: number; lng: number; nombre: string };
 }
